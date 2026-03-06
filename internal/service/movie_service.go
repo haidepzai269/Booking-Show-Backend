@@ -5,12 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"os"
 	"time"
 
 	"github.com/booking-show/booking-show-api/internal/model"
 	"github.com/booking-show/booking-show-api/internal/repository"
 	redispkg "github.com/booking-show/booking-show-api/pkg/redis"
+	"github.com/pgvector/pgvector-go"
 	"gorm.io/gorm"
 )
 
@@ -176,6 +176,15 @@ func (s *MovieService) CreateMovie(req CreateMovieReq) (*model.Movie, error) {
 		movie.Genres = genres
 	}
 
+	// Auto generate embedding from Title and Description
+	aiSvc := NewAIService("")
+	if vec, err := aiSvc.GenerateEmbedding(req.Title + ". " + req.Description); err == nil && len(vec) == 384 {
+		v := pgvector.NewVector(vec)
+		movie.Embedding = &v
+	} else {
+		log.Printf("Warning: Failed to generate embedding for new movie: %v", err)
+	}
+
 	if err := repository.DB.Create(&movie).Error; err != nil {
 		return nil, err
 	}
@@ -248,6 +257,15 @@ func (s *MovieService) UpdateMovie(id int, req UpdateMovieReq) (*model.Movie, er
 		parsed, err := time.Parse("2006-01-02", req.ReleaseDate)
 		if err == nil {
 			movie.ReleaseDate = parsed
+		}
+	}
+
+	// Update embedding if title or description changed
+	if req.Title != "" || req.Description != "" {
+		aiSvc := NewAIService("")
+		if vec, err := aiSvc.GenerateEmbedding(movie.Title + ". " + movie.Description); err == nil && len(vec) == 384 {
+			v := pgvector.NewVector(vec)
+			movie.Embedding = &v
 		}
 	}
 
@@ -379,49 +397,30 @@ func (s *MovieService) SearchMovies(req SearchMoviesReq) ([]model.Movie, error) 
 	if req.Query != "" {
 		// 1. Thu dung AI Search (RAG) truoc neu query co y nghia (du dai)
 		if len(req.Query) >= 3 {
-			var allMovies []model.Movie
-			repository.DB.Preload("Genres").Where("is_active = ?", true).Find(&allMovies)
+			aiSvc := NewAIService("")
+			embedding, err := aiSvc.GenerateEmbedding(req.Query)
 
-			var metaStr string
-			for _, m := range allMovies {
-				genreNames := ""
-				for _, g := range m.Genres {
-					genreNames += g.Name + " "
+			if err == nil && len(embedding) > 0 {
+				vec := pgvector.NewVector(embedding)
+				// Dùng Cosine Distance (<=>) của pgvector
+				aiDB := repository.DB.Preload("Genres").Where("is_active = ?", true).
+					Order(gorm.Expr("NULLIF(embedding::text, '')::vector <=> ?", vec))
+
+				if err := aiDB.Limit(req.Limit).Find(&movies).Error; err != nil {
+					return nil, err
 				}
-				metaStr += fmt.Sprintf("ID: %d | Title: %s | Genres: %s | Description: %.150s\n", m.ID, m.Title, genreNames, m.Description)
-			}
 
-			aiKey := os.Getenv("GROQ_API_KEY")
-			if aiKey != "" {
-				aiSvc := NewAIService(aiKey)
-				matchedIDs, err := aiSvc.AnalyzeSearchQuery(req.Query, metaStr)
-
-				if err == nil && len(matchedIDs) > 0 {
-					aiDB := repository.DB.Preload("Genres").Where("is_active = ?", true).Where("movies.id IN ?", matchedIDs)
-
-					orderClause := "CASE movies.id "
-					for i, id := range matchedIDs {
-						orderClause += fmt.Sprintf("WHEN %d THEN %d ", id, i)
-					}
-					orderClause += "ELSE 9999 END"
-					aiDB = aiDB.Order(gorm.Expr(orderClause))
-
-					if err := aiDB.Limit(req.Limit).Find(&movies).Error; err != nil {
-						return nil, err
-					}
-
-					if len(movies) > 0 {
-						log.Printf("[AI Search RAG] Query: '%s' -> Matched IDs: %v\n", req.Query, matchedIDs)
-						if redispkg.Client != nil {
-							if data, err := json.Marshal(movies); err == nil {
-								redispkg.Client.Set(redispkg.Ctx, cacheKey, data, 5*time.Minute)
-							}
+				if len(movies) > 0 {
+					log.Printf("[AI Vector Search] Query: '%s' -> Found %d\n", req.Query, len(movies))
+					if redispkg.Client != nil {
+						if data, err := json.Marshal(movies); err == nil {
+							redispkg.Client.Set(redispkg.Ctx, cacheKey, data, 5*time.Minute)
 						}
-						return movies, nil
 					}
-				} else if err != nil {
-					log.Printf("[AI Search Error]: %v\n", err)
+					return movies, nil
 				}
+			} else {
+				log.Printf("[AI Vector Error]: %v\n", err)
 			}
 		}
 

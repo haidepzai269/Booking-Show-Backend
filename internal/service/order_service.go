@@ -174,7 +174,7 @@ func (s *OrderService) GetOrder(orderIDStr string, userID int, isAdmin bool) (*m
 		return nil, errors.New("invalid order ID")
 	}
 	var order model.Order
-	q := repository.DB.Preload("Showtime.Movie").Preload("Showtime.Room.Cinema").
+	q := repository.DB.Preload("User").Preload("Showtime.Movie").Preload("Showtime.Room.Cinema").
 		Preload("Promotion").Preload("OrderSeats").Where("id = ?", orderID)
 	if !isAdmin {
 		q = q.Where("user_id = ?", userID)
@@ -448,9 +448,13 @@ func (s *OrderService) ListAdminOrders(page, limit int, q string) ([]model.Order
 	if q != "" {
 		// Thử parse UUID nếu nó là mã đơn
 		if _, err := uuid.Parse(q); err == nil {
-			query = query.Where("id = ?", q)
+			query = query.Where("orders.id = ?", q)
 		} else {
-			// Tìm theo tên user email hoặc name (cần join DB, tạm bỏ qua xử lý phức tạp)
+			like := "%" + q + "%"
+			query = query.Joins("JOIN users ON users.id = orders.user_id").
+				Joins("JOIN showtimes ON showtimes.id = orders.showtime_id").
+				Joins("JOIN movies ON movies.id = showtimes.movie_id").
+				Where("users.full_name ILIKE ? OR users.email ILIKE ? OR movies.title ILIKE ?", like, like, like)
 		}
 	}
 
@@ -460,7 +464,7 @@ func (s *OrderService) ListAdminOrders(page, limit int, q string) ([]model.Order
 
 	offset := (page - 1) * limit
 	if err := query.Preload("User").Preload("Showtime.Movie").
-		Order("created_at DESC").Offset(offset).Limit(limit).Find(&orders).Error; err != nil {
+		Order("orders.created_at DESC").Offset(offset).Limit(limit).Find(&orders).Error; err != nil {
 		return nil, 0, err
 	}
 

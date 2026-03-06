@@ -1,11 +1,14 @@
 package handler
 
 import (
+	"encoding/json"
+	"log"
 	"net/http"
 	"strconv"
 	"time"
 
 	"github.com/booking-show/booking-show-api/internal/service"
+	redispkg "github.com/booking-show/booking-show-api/pkg/redis"
 	"github.com/gin-gonic/gin"
 )
 
@@ -129,6 +132,20 @@ func (h *AdminHandler) CreateCinema(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
 		return
 	}
+
+	// Active Invalidation
+	if redispkg.Client != nil {
+		iter := redispkg.Client.Scan(redispkg.Ctx, 0, "admin:cinemas:list:*", 0).Iterator()
+		var keysToDelete []string
+		for iter.Next(redispkg.Ctx) {
+			keysToDelete = append(keysToDelete, iter.Val())
+		}
+		if len(keysToDelete) > 0 {
+			redispkg.Client.Del(redispkg.Ctx, keysToDelete...)
+			log.Printf("[Cache INVALIDATED] %d keys cleared after CreateCinema\n", len(keysToDelete))
+		}
+	}
+
 	c.JSON(http.StatusCreated, gin.H{"success": true, "data": cinema})
 }
 
@@ -151,6 +168,20 @@ func (h *AdminHandler) CreateRoom(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
 		return
 	}
+
+	// Active Invalidation
+	if redispkg.Client != nil {
+		iter := redispkg.Client.Scan(redispkg.Ctx, 0, "admin:cinemas:list:*", 0).Iterator()
+		var keysToDelete []string
+		for iter.Next(redispkg.Ctx) {
+			keysToDelete = append(keysToDelete, iter.Val())
+		}
+		if len(keysToDelete) > 0 {
+			redispkg.Client.Del(redispkg.Ctx, keysToDelete...)
+			log.Printf("[Cache INVALIDATED] %d keys cleared after CreateRoom\n", len(keysToDelete))
+		}
+	}
+
 	c.JSON(http.StatusCreated, gin.H{"success": true, "data": room})
 }
 
@@ -159,6 +190,24 @@ func (h *AdminHandler) ListAdminCinemas(c *gin.Context) {
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "10"))
 	q := c.Query("q")
 
+	cacheKey := "admin:cinemas:list:" + strconv.Itoa(page) + ":" + strconv.Itoa(limit) + ":" + q
+
+	// Get from Cache
+	if redispkg.Client != nil {
+		if cached, err := redispkg.Client.Get(redispkg.Ctx, cacheKey).Result(); err == nil {
+			var cachedResult map[string]interface{}
+			if err := json.Unmarshal([]byte(cached), &cachedResult); err == nil {
+				c.JSON(http.StatusOK, gin.H{
+					"success": true,
+					"data":    cachedResult["data"],
+					"meta":    cachedResult["meta"],
+					"cached":  true,
+				})
+				return
+			}
+		}
+	}
+
 	cinemaSvc := &service.CinemaService{}
 	cinemas, total, err := cinemaSvc.ListAdminCinemas(page, limit, q)
 	if err != nil {
@@ -166,14 +215,27 @@ func (h *AdminHandler) ListAdminCinemas(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"data":    cinemas,
+	result := gin.H{
+		"data": cinemas,
 		"meta": gin.H{
 			"page":  page,
 			"limit": limit,
 			"total": total,
 		},
+	}
+
+	// Save to cache (2h TTL)
+	if redispkg.Client != nil {
+		if b, err := json.Marshal(result); err == nil {
+			redispkg.Client.Set(redispkg.Ctx, cacheKey, b, 2*time.Hour)
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data":    result["data"],
+		"meta":    result["meta"],
+		"cached":  false,
 	})
 }
 
@@ -197,6 +259,19 @@ func (h *AdminHandler) UpdateCinema(c *gin.Context) {
 		return
 	}
 
+	// Active Invalidation
+	if redispkg.Client != nil {
+		iter := redispkg.Client.Scan(redispkg.Ctx, 0, "admin:cinemas:list:*", 0).Iterator()
+		var keysToDelete []string
+		for iter.Next(redispkg.Ctx) {
+			keysToDelete = append(keysToDelete, iter.Val())
+		}
+		if len(keysToDelete) > 0 {
+			redispkg.Client.Del(redispkg.Ctx, keysToDelete...)
+			log.Printf("[Cache INVALIDATED] %d keys cleared after UpdateCinema\n", len(keysToDelete))
+		}
+	}
+
 	c.JSON(http.StatusOK, gin.H{"success": true, "data": cinema})
 }
 
@@ -211,6 +286,19 @@ func (h *AdminHandler) DeleteCinema(c *gin.Context) {
 	if err := cinemaSvc.DeleteCinema(id); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
 		return
+	}
+
+	// Active Invalidation
+	if redispkg.Client != nil {
+		iter := redispkg.Client.Scan(redispkg.Ctx, 0, "admin:cinemas:list:*", 0).Iterator()
+		var keysToDelete []string
+		for iter.Next(redispkg.Ctx) {
+			keysToDelete = append(keysToDelete, iter.Val())
+		}
+		if len(keysToDelete) > 0 {
+			redispkg.Client.Del(redispkg.Ctx, keysToDelete...)
+			log.Printf("[Cache INVALIDATED] keys cleared after DeleteCinema id=%d\n", id)
+		}
 	}
 
 	c.JSON(http.StatusOK, gin.H{"success": true, "message": "Cinema deleted successfully"})
@@ -244,6 +332,19 @@ func (h *AdminHandler) DeleteRoom(c *gin.Context) {
 	if err := cinemaSvc.DeleteRoom(id); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
 		return
+	}
+
+	// Active Invalidation
+	if redispkg.Client != nil {
+		iter := redispkg.Client.Scan(redispkg.Ctx, 0, "admin:cinemas:list:*", 0).Iterator()
+		var keysToDelete []string
+		for iter.Next(redispkg.Ctx) {
+			keysToDelete = append(keysToDelete, iter.Val())
+		}
+		if len(keysToDelete) > 0 {
+			redispkg.Client.Del(redispkg.Ctx, keysToDelete...)
+			log.Printf("[Cache INVALIDATED] keys cleared after DeleteRoom id=%d\n", id)
+		}
 	}
 
 	c.JSON(http.StatusOK, gin.H{"success": true, "message": "Room deleted successfully"})

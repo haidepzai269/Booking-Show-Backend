@@ -25,6 +25,11 @@ func ConnectDB(cfg *config.Config) {
 		log.Printf("Warning: Failed to create pg_trgm extension: %v", err)
 	}
 
+	// Cấu hình pgvector cho Vector Search
+	if err := db.Exec("CREATE EXTENSION IF NOT EXISTS vector;").Error; err != nil {
+		log.Printf("Warning: Failed to create vector extension: %v", err)
+	}
+
 	// Cấu hình Connection Pool để tối ưu hiệu năng khi tải cao
 	sqlDB, err := db.DB()
 	if err != nil {

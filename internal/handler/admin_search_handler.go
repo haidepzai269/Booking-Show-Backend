@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -15,6 +14,9 @@ import (
 	"github.com/booking-show/booking-show-api/internal/service"
 	redispkg "github.com/booking-show/booking-show-api/pkg/redis"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
+	"github.com/pgvector/pgvector-go"
+	"gorm.io/gorm"
 )
 
 // TTL constants
@@ -180,73 +182,44 @@ func searchMoviesWithAI(q, like string, aiUsed *bool) []SearchResultMovie {
 		}
 	}
 
-	// --- Thử AI nếu query đủ dài ---
+	// --- Thử AI Vector nếu query đủ dài ---
 	if len(q) >= 3 {
-		groqKey := os.Getenv("GROQ_API_KEY")
-		if groqKey != "" {
-			// Dùng lại cache movies:all nếu có (không query DB lại)
+		aiSvc := service.NewAIService("")
+		embedding, err := aiSvc.GenerateEmbedding(q)
+		if err == nil && len(embedding) > 0 {
 			var allMovies []model.Movie
-			if redispkg.Client != nil {
-				if cached, err := redispkg.Client.Get(redispkg.Ctx, "movies:all").Result(); err == nil {
-					_ = json.Unmarshal([]byte(cached), &allMovies)
-				}
-			}
-			// Fallback: query DB nếu cache miss
-			if len(allMovies) == 0 {
-				repository.DB.Preload("Genres").Where("is_active = ?", true).Find(&allMovies)
-			}
+			vec := pgvector.NewVector(embedding)
 
-			// Build metadata string cho RAG
-			var metaStr strings.Builder
+			repository.DB.Where("is_active = ?", true).
+				Order(gorm.Expr("NULLIF(embedding::text, '')::vector <=> ?", vec)).
+				Limit(5).
+				Find(&allMovies)
+
+			log.Printf("[Admin AI Vector Search] q='%s' -> Found: %v", q, len(allMovies))
+
+			var results []SearchResultMovie
 			for _, m := range allMovies {
-				genreNames := ""
-				for _, g := range m.Genres {
-					genreNames += g.Name + " "
-				}
-				metaStr.WriteString(fmt.Sprintf("ID: %d | Title: %s | Genres: %s | Desc: %.100s\n",
-					m.ID, m.Title, genreNames, m.Description))
+				results = append(results, SearchResultMovie{
+					ID:       m.ID,
+					Title:    m.Title,
+					Poster:   m.PosterURL,
+					IsActive: m.IsActive,
+					AIMatch:  true,
+				})
 			}
 
-			aiSvc := service.NewAIService(groqKey)
-			matchedIDs, err := aiSvc.AnalyzeSearchQuery("Admin search: "+q, metaStr.String())
-			if err == nil && len(matchedIDs) > 0 {
-				log.Printf("[Admin AI Search] q='%s' -> IDs: %v", q, matchedIDs)
-
-				// Map để lookup nhanh
-				movieMap := make(map[int]model.Movie, len(allMovies))
-				for _, m := range allMovies {
-					movieMap[m.ID] = m
-				}
-
-				var results []SearchResultMovie
-				for _, id := range matchedIDs {
-					if m, ok := movieMap[id]; ok {
-						results = append(results, SearchResultMovie{
-							ID:       m.ID,
-							Title:    m.Title,
-							Poster:   m.PosterURL,
-							IsActive: m.IsActive,
-							AIMatch:  true,
-						})
-					}
-					if len(results) >= 5 {
-						break
+			if len(results) > 0 {
+				*aiUsed = true
+				// Cache kết quả AI riêng (TTL 10 phút)
+				if redispkg.Client != nil {
+					if data, err := json.Marshal(results); err == nil {
+						redispkg.Client.Set(redispkg.Ctx, aiCacheKey, data, adminAISearchTTL)
 					}
 				}
-
-				if len(results) > 0 {
-					*aiUsed = true
-					// Cache kết quả AI riêng (TTL 10 phút)
-					if redispkg.Client != nil {
-						if data, err := json.Marshal(results); err == nil {
-							redispkg.Client.Set(redispkg.Ctx, aiCacheKey, data, adminAISearchTTL)
-						}
-					}
-					return results
-				}
-			} else if err != nil {
-				log.Printf("[Admin AI Search Error] q='%s': %v", q, err)
+				return results
 			}
+		} else {
+			log.Printf("[Admin AI Vector Search Error] q='%s': %v", q, err)
 		}
 	}
 
@@ -254,7 +227,7 @@ func searchMoviesWithAI(q, like string, aiUsed *bool) []SearchResultMovie {
 	log.Printf("[Admin Fuzzy Search] q='%s'", q)
 	var movies []model.Movie
 	repository.DB.
-		Where("title ILIKE ? OR original_title ILIKE ?", like, like).
+		Where("title ILIKE ?", like).
 		Select("id, title, poster_url, is_active").
 		Limit(5).
 		Find(&movies)
@@ -302,15 +275,26 @@ func searchOrders(like string) []SearchResultOrder {
 		Status      string
 	}
 	var orders []rawOrder
-	repository.DB.Table("orders").
+
+	q := strings.Trim(like, "%")
+	isUUID := false
+	if _, err := uuid.Parse(q); err == nil {
+		isUUID = true
+	}
+
+	query := repository.DB.Table("orders").
 		Select("orders.id, users.full_name as user_name, movies.title as movie_title, orders.final_amount, orders.status").
 		Joins("JOIN users ON users.id = orders.user_id").
 		Joins("JOIN showtimes ON showtimes.id = orders.showtime_id").
-		Joins("JOIN movies ON movies.id = showtimes.movie_id").
-		Where("users.full_name ILIKE ? OR users.email ILIKE ? OR movies.title ILIKE ? OR CAST(orders.id AS TEXT) ILIKE ?",
-			like, like, like, like).
-		Limit(5).
-		Scan(&orders)
+		Joins("JOIN movies ON movies.id = showtimes.movie_id")
+
+	if isUUID {
+		query = query.Where("orders.id = ?", q)
+	} else {
+		query = query.Where("users.full_name ILIKE ? OR users.email ILIKE ? OR movies.title ILIKE ?", like, like, like)
+	}
+
+	query.Limit(5).Scan(&orders)
 
 	results := make([]SearchResultOrder, 0, len(orders))
 	for _, o := range orders {

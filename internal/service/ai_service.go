@@ -111,6 +111,45 @@ Dưới đây là DANH SÁCH PHIM HIỆN CÓ (dữ liệu RAG):
 	return matchedIDs, nil
 }
 
+// GenerateEmbedding - Gọi HuggingFace API để tạo Vector cho nội dung (chuẩn bị dữ liệu cho vector search pgvector)
+func (s *AIService) GenerateEmbedding(text string) ([]float32, error) {
+	// Sử dụng model miễn phí của HuggingFace (all-MiniLM-L6-v2: 384 dimensions)
+	// Lưu ý: Trong môi trường production thực tế, nên cung cấp Authorization: Bearer <HF_TOKEN>
+	// hoặc tự host pipeline python. Trong project này, ta gọi thẳng public inference.
+	url := "https://api-inference.huggingface.co/pipeline/feature-extraction/sentence-transformers/all-MiniLM-L6-v2"
+
+	payload := map[string]interface{}{
+		"inputs": text,
+	}
+	jsonData, _ := json.Marshal(payload)
+
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("huggingface api request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		// Tránh spam log, trả về lỗi khi API rate limit
+		return nil, fmt.Errorf("huggingface api error %d: %s", resp.StatusCode, string(bodyBytes))
+	}
+
+	var vector []float32
+	if err := json.NewDecoder(resp.Body).Decode(&vector); err != nil {
+		return nil, fmt.Errorf("failed to parse embedding response: %v", err)
+	}
+
+	return vector, nil
+}
+
 // AnswerFAQ nhận một câu hỏi từ người dùng và sử dụng RAG để trả lời dựa trên context của rạp phim
 func (s *AIService) AnswerFAQ(question string, moviesData string) (string, error) {
 	if s.groqAPIKey == "" {

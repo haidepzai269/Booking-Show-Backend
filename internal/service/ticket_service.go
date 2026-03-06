@@ -8,6 +8,7 @@ import (
 
 	"github.com/booking-show/booking-show-api/internal/model"
 	"github.com/booking-show/booking-show-api/internal/repository"
+	redispkg "github.com/booking-show/booking-show-api/pkg/redis"
 	"github.com/booking-show/booking-show-api/pkg/sse"
 	"github.com/google/uuid"
 )
@@ -227,6 +228,21 @@ func (s *TicketService) ProcessPaymentSuccess(orderIDStr, gateway, transactionID
 
 	// 🔔 Push real-time notification đến Admin panel
 	go func() {
+		// Active Invalidation for Admin Dashboard and Order Lists
+		if redispkg.Client != nil {
+			iter := redispkg.Client.Scan(redispkg.Ctx, 0, "admin:orders:list:*", 0).Iterator()
+			var keysToDelete []string
+			for iter.Next(redispkg.Ctx) {
+				keysToDelete = append(keysToDelete, iter.Val())
+			}
+			keysToDelete = append(keysToDelete, "admin:dashboard:stats")
+
+			if len(keysToDelete) > 0 {
+				redispkg.Client.Del(redispkg.Ctx, keysToDelete...)
+				log.Printf("🧹 [Cache INVALIDATED] Dashboard & Orders Cache Cleared Due To Payment Success")
+			}
+		}
+
 		var user model.User
 		var showtime model.Showtime
 		repository.DB.First(&user, order.UserID)

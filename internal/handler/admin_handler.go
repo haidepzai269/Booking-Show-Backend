@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"log"
 	"net/http"
 	"strconv"
@@ -56,6 +57,23 @@ func (h *AdminHandler) Upload(c *gin.Context) {
 
 // GetDashboardStats - Thống kê tổng quan cho dashboard admin
 func (h *AdminHandler) GetDashboardStats(c *gin.Context) {
+	cacheKey := "admin:dashboard:stats"
+
+	// 1. Try to get from Cache
+	if redispkg.Client != nil {
+		if cached, err := redispkg.Client.Get(redispkg.Ctx, cacheKey).Result(); err == nil {
+			var data map[string]interface{}
+			if err := json.Unmarshal([]byte(cached), &data); err == nil {
+				c.JSON(http.StatusOK, gin.H{
+					"success": true,
+					"data":    data,
+					"cached":  true,
+				})
+				return
+			}
+		}
+	}
+
 	// Tổng doanh thu (chỉ tính các đơn COMPLETED)
 	var totalRevenue int64
 	repository.DB.Model(&model.Order{}).
@@ -138,18 +156,28 @@ func (h *AdminHandler) GetDashboardStats(c *gin.Context) {
 		})
 	}
 
+	data := gin.H{
+		"total_revenue":   totalRevenue,
+		"total_orders":    totalOrders,
+		"total_users":     totalUsers,
+		"total_tickets":   totalTickets,
+		"total_movies":    totalMovies,
+		"monthly_revenue": monthlyRevenue,
+		"recent_orders":   recentOrders,
+		"chart_data":      chartData,
+	}
+
+	// Save to cache
+	if redispkg.Client != nil {
+		if b, err := json.Marshal(data); err == nil {
+			redispkg.Client.Set(redispkg.Ctx, cacheKey, b, 5*time.Minute)
+		}
+	}
+
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
-		"data": gin.H{
-			"total_revenue":   totalRevenue,
-			"total_orders":    totalOrders,
-			"total_users":     totalUsers,
-			"total_tickets":   totalTickets,
-			"total_movies":    totalMovies,
-			"monthly_revenue": monthlyRevenue,
-			"recent_orders":   recentOrders,
-			"chart_data":      chartData,
-		},
+		"data":    data,
+		"cached":  false,
 	})
 }
 
@@ -160,6 +188,19 @@ func (h *AdminHandler) ListAdminMovies(c *gin.Context) {
 	q := c.Query("q")
 	onlyActive := c.Query("active") == "true"
 
+	cacheKey := "admin:movies:list:" + strconv.Itoa(page) + ":" + strconv.Itoa(limit) + ":" + q + ":" + strconv.FormatBool(onlyActive)
+
+	// Get from Cache
+	if redispkg.Client != nil {
+		if cached, err := redispkg.Client.Get(redispkg.Ctx, cacheKey).Result(); err == nil {
+			var cachedResult map[string]interface{}
+			if err := json.Unmarshal([]byte(cached), &cachedResult); err == nil {
+				c.JSON(http.StatusOK, gin.H{"success": true, "data": cachedResult, "cached": true})
+				return
+			}
+		}
+	}
+
 	movieService := &service.MovieService{}
 	result, err := movieService.ListAdminMovies(page, limit, q, onlyActive)
 	if err != nil {
@@ -167,7 +208,14 @@ func (h *AdminHandler) ListAdminMovies(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"success": true, "data": result})
+	// Save to cache (2h TTL)
+	if redispkg.Client != nil {
+		if b, err := json.Marshal(result); err == nil {
+			redispkg.Client.Set(redispkg.Ctx, cacheKey, b, 2*time.Hour)
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": result, "cached": false})
 }
 
 // CreateMovie - Tạo phim mới
@@ -185,16 +233,23 @@ func (h *AdminHandler) CreateMovie(c *gin.Context) {
 		return
 	}
 
-	// Active Invalidation
+	// Active Invalidation (Movies & Dashboard)
 	if redispkg.Client != nil {
+		// Clear search + map admin cache
 		iter := redispkg.Client.Scan(redispkg.Ctx, 0, "movies:search:*", 0).Iterator()
 		var keysToDelete []string
 		for iter.Next(redispkg.Ctx) {
 			keysToDelete = append(keysToDelete, iter.Val())
 		}
+		adminIter := redispkg.Client.Scan(redispkg.Ctx, 0, "admin:movies:list:*", 0).Iterator()
+		for adminIter.Next(redispkg.Ctx) {
+			keysToDelete = append(keysToDelete, adminIter.Val())
+		}
+		keysToDelete = append(keysToDelete, "admin:dashboard:stats") // Invalidate dashboard stats
+
 		if len(keysToDelete) > 0 {
 			redispkg.Client.Del(redispkg.Ctx, keysToDelete...)
-			log.Printf("[Cache INVALIDATED] %d search cache keys cleared after CreateMovie\n", len(keysToDelete))
+			log.Printf("[Cache INVALIDATED] %d keys cleared after CreateMovie\n", len(keysToDelete))
 		}
 	}
 
@@ -223,6 +278,24 @@ func (h *AdminHandler) UpdateMovie(c *gin.Context) {
 		return
 	}
 
+	// Active Invalidation
+	if redispkg.Client != nil {
+		iter := redispkg.Client.Scan(redispkg.Ctx, 0, "movies:search:*", 0).Iterator()
+		var keysToDelete []string
+		for iter.Next(redispkg.Ctx) {
+			keysToDelete = append(keysToDelete, iter.Val())
+		}
+		adminIter := redispkg.Client.Scan(redispkg.Ctx, 0, "admin:movies:list:*", 0).Iterator()
+		for adminIter.Next(redispkg.Ctx) {
+			keysToDelete = append(keysToDelete, adminIter.Val())
+		}
+
+		if len(keysToDelete) > 0 {
+			redispkg.Client.Del(redispkg.Ctx, keysToDelete...)
+			log.Printf("[Cache INVALIDATED] %d keys cleared after UpdateMovie\n", len(keysToDelete))
+		}
+	}
+
 	c.JSON(http.StatusOK, gin.H{"success": true, "data": movie})
 }
 
@@ -248,6 +321,12 @@ func (h *AdminHandler) DeleteMovie(c *gin.Context) {
 		for iter.Next(redispkg.Ctx) {
 			keysToDelete = append(keysToDelete, iter.Val())
 		}
+		adminIter := redispkg.Client.Scan(redispkg.Ctx, 0, "admin:movies:list:*", 0).Iterator()
+		for adminIter.Next(redispkg.Ctx) {
+			keysToDelete = append(keysToDelete, adminIter.Val())
+		}
+		keysToDelete = append(keysToDelete, "admin:dashboard:stats")
+
 		if len(keysToDelete) > 0 {
 			redispkg.Client.Del(redispkg.Ctx, keysToDelete...)
 			log.Printf("[Cache INVALIDATED] search cache cleared after DeleteMovie id=%d\n", id)
@@ -331,6 +410,24 @@ func (h *AdminHandler) ListAdminOrders(c *gin.Context) {
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "10"))
 	q := c.Query("q")
 
+	cacheKey := "admin:orders:list:" + strconv.Itoa(page) + ":" + strconv.Itoa(limit) + ":" + q
+
+	// Get from Cache
+	if redispkg.Client != nil {
+		if cached, err := redispkg.Client.Get(redispkg.Ctx, cacheKey).Result(); err == nil {
+			var cachedResult map[string]interface{}
+			if err := json.Unmarshal([]byte(cached), &cachedResult); err == nil {
+				c.JSON(http.StatusOK, gin.H{
+					"success": true,
+					"data":    cachedResult["data"],
+					"meta":    cachedResult["meta"],
+					"cached":  true,
+				})
+				return
+			}
+		}
+	}
+
 	orderSvc := &service.OrderService{}
 	orders, total, err := orderSvc.ListAdminOrders(page, limit, q)
 	if err != nil {
@@ -338,14 +435,27 @@ func (h *AdminHandler) ListAdminOrders(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"data":    orders,
+	result := gin.H{
+		"data": orders,
 		"meta": gin.H{
 			"page":  page,
 			"limit": limit,
 			"total": total,
 		},
+	}
+
+	// Save to cache (30s TTL cho Orders vì tính real-time cao)
+	if redispkg.Client != nil {
+		if b, err := json.Marshal(result); err == nil {
+			redispkg.Client.Set(redispkg.Ctx, cacheKey, b, 30*time.Second)
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data":    result["data"],
+		"meta":    result["meta"],
+		"cached":  false,
 	})
 }
 

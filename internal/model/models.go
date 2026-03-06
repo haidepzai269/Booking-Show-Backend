@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/pgvector/pgvector-go"
 )
 
 type UserRole string
@@ -90,15 +91,16 @@ type Genre struct {
 }
 
 type Movie struct {
-	ID              int       `json:"id" gorm:"primaryKey;autoIncrement"`
-	Title           string    `json:"title" gorm:"type:varchar(255);not null"`
-	Description     string    `json:"description" gorm:"type:text"`
-	DurationMinutes int       `json:"duration_minutes" gorm:"not null"`
-	ReleaseDate     time.Time `json:"release_date" gorm:"type:date"`
-	PosterURL       string    `json:"poster_url" gorm:"type:varchar(255)"`
-	TrailerURL      string    `json:"trailer_url" gorm:"type:varchar(255)"`
-	CreatedAt       time.Time `json:"created_at" gorm:"autoCreateTime"`
-	IsActive        bool      `json:"is_active" gorm:"default:true"`
+	ID              int              `json:"id" gorm:"primaryKey;autoIncrement"`
+	Title           string           `json:"title" gorm:"type:varchar(255);not null"`
+	Description     string           `json:"description" gorm:"type:text"`
+	DurationMinutes int              `json:"duration_minutes" gorm:"not null"`
+	ReleaseDate     time.Time        `json:"release_date" gorm:"type:date"`
+	PosterURL       string           `json:"poster_url" gorm:"type:varchar(255)"`
+	TrailerURL      string           `json:"trailer_url" gorm:"type:varchar(255)"`
+	CreatedAt       time.Time        `json:"created_at" gorm:"autoCreateTime"`
+	IsActive        bool             `json:"is_active" gorm:"default:true"`
+	Embedding       *pgvector.Vector `json:"-" gorm:"type:vector(384)"`
 
 	Genres []Genre `json:"genres" gorm:"many2many:movie_genres;"`
 }
@@ -184,7 +186,7 @@ type Order struct {
 	ExpiresAt      time.Time   `json:"expires_at" gorm:"not null;index:idx_orders_expires_at"`
 	CreatedAt      time.Time   `json:"created_at" gorm:"autoCreateTime"`
 
-	User       User        `json:"-" gorm:"foreignKey:UserID"`
+	User       User        `json:"User" gorm:"foreignKey:UserID"`
 	Showtime   Showtime    `json:"showtime" gorm:"foreignKey:ShowtimeID"`
 	Promotion  *Promotion  `json:"promotion" gorm:"foreignKey:PromotionID"`
 	OrderSeats []OrderSeat `json:"order_seats" gorm:"foreignKey:OrderID"`
