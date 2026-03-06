@@ -1,8 +1,12 @@
 package sse
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"sync"
+
+	bookingredis "github.com/booking-show/booking-show-api/pkg/redis"
 )
 
 type Client struct {
@@ -50,6 +54,10 @@ func (h *Hub) RemoveClient(c *Client) {
 func (h *Hub) Broadcast(message string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if len(h.clients) == 0 {
+		return
+	}
+	fmt.Printf("📢 [SSE HUB] Broadcasting to %d clients: %s\n", len(h.clients), message)
 	for client := range h.clients {
 		select {
 		case client.Channel <- message:
@@ -60,8 +68,45 @@ func (h *Hub) Broadcast(message string) {
 	}
 }
 
-// BroadcastSeatUpdate Gửi JSON event trạng thái ghế về client
+type SeatUpdateEvent struct {
+	ShowtimeID int    `json:"showtime_id"`
+	SeatID     int    `json:"seat_id"`
+	Status     string `json:"status"`
+}
+
+// BroadcastSeatUpdate Gửi sự kiện lên Redis Pub/Sub để tất cả các instance đều nhận được
 func BroadcastSeatUpdate(showtimeID int, seatID int, status string) {
-	msg := fmt.Sprintf(`{"seat_id": %d, "status": "%s"}`, seatID, status)
-	GetHub(showtimeID).Broadcast(msg)
+	event := SeatUpdateEvent{
+		ShowtimeID: showtimeID,
+		SeatID:     seatID,
+		Status:     status,
+	}
+	payload, _ := json.Marshal(event)
+
+	fmt.Printf("🚀 [Redis PUBLISH] sse:seat_updates -> %s\n", string(payload))
+	bookingredis.Client.Publish(context.Background(), "sse:seat_updates", payload)
+}
+
+// StartSubscriber Lắng nghe các sự kiện từ Redis để cập nhật SSE Hub local
+func StartSubscriber() {
+	pubsub := bookingredis.Client.Subscribe(context.Background(), "sse:seat_updates")
+	defer pubsub.Close()
+
+	fmt.Println("📡 [SSE Subscriber] Listening to Redis channel: sse:seat_updates")
+
+	ch := pubsub.Channel()
+	for msg := range ch {
+		var event SeatUpdateEvent
+		if err := json.Unmarshal([]byte(msg.Payload), &event); err != nil {
+			fmt.Printf("❌ [SSE Subscriber] Failed to unmarshal: %v\n", err)
+			continue
+		}
+
+		fmt.Printf("📥 [Redis RECEIVE] sse:seat_updates -> Showtime=%d, Seat=%d, Status=%s\n",
+			event.ShowtimeID, event.SeatID, event.Status)
+
+		// Broadcast tới các client SSE đang kết nối vào instance này
+		sseMsg := fmt.Sprintf(`{"seat_id": %d, "status": "%s"}`, event.SeatID, event.Status)
+		GetHub(event.ShowtimeID).Broadcast(sseMsg)
+	}
 }

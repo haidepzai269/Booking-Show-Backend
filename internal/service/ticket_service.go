@@ -226,6 +226,11 @@ func (s *TicketService) ProcessPaymentSuccess(orderIDStr, gateway, transactionID
 	}
 	log.Printf("🎉 [ProcessPaymentSuccess] SUCCESS — order=%s, %d tickets", orderIDStr, len(tickets))
 
+	// 🔔 Push real-time notification đến bản đồ ghế (Cập nhật trạng thái BOOKED)
+	for _, seat := range showtimeSeats {
+		sse.BroadcastSeatUpdate(order.ShowtimeID, seat.ID, "BOOKED")
+	}
+
 	// 🔔 Push real-time notification đến Admin panel
 	go func() {
 		// Active Invalidation for Admin Dashboard and Order Lists

@@ -13,6 +13,7 @@ import (
 	"github.com/booking-show/booking-show-api/pkg/cloudinary"
 	"github.com/booking-show/booking-show-api/pkg/rabbitmq"
 	"github.com/booking-show/booking-show-api/pkg/redis"
+	"github.com/booking-show/booking-show-api/pkg/sse"
 
 	"github.com/gin-gonic/gin"
 )
@@ -25,11 +26,15 @@ func main() {
 	repository.ConnectDB(cfg)
 	repository.MigrateDB()
 	redis.ConnectRedis(cfg)
+	go sse.StartSubscriber()
 	rabbitmq.ConnectRabbitMQ(cfg)
 	defer rabbitmq.CloseRabbitMQ()
-	// Khởi động worker ngầm lắng nghe thanh toán
+	// Khởi động worker ngầm lắng nghe log và email
 	ticketSvc := &service.TicketService{}
 	rabbitmq.StartPaymentWorker(ticketSvc.ProcessPaymentSuccess)
+
+	emailSvc := service.NewEmailService(cfg)
+	rabbitmq.StartEmailWorker(emailSvc.SendMagicLink)
 
 	// Khởi động cronjob 1 phút check 1 lần đễ dọn dẹp các khoản thanh toán quá 10p
 	cron.StartOrderCleanupCronjob()

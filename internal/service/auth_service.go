@@ -2,14 +2,17 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"time"
 
 	"github.com/booking-show/booking-show-api/config"
 	"github.com/booking-show/booking-show-api/internal/model"
 	"github.com/booking-show/booking-show-api/internal/repository"
 	"github.com/booking-show/booking-show-api/pkg/jwt"
+	"github.com/booking-show/booking-show-api/pkg/rabbitmq"
 	"github.com/booking-show/booking-show-api/pkg/redis"
 	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
@@ -98,12 +101,22 @@ func (s *AuthService) RequestMagicLink(email string) error {
 	}
 
 	// Gửi email
-	if s.EmailService == nil {
-		s.EmailService = NewEmailService(s.Cfg)
+	// 4. Publish Event "Gửi email" vào RabbitMQ thay vì gọi SendMail đồng bộ (Blocking)
+	// if s.EmailService == nil {
+	// 	s.EmailService = NewEmailService(s.Cfg)
+	// }
+	// if err := s.EmailService.SendMagicLink(email, token); err != nil {
+	// 	return err
+	// }
+	emailEvent := map[string]string{
+		"email": user.Email,
+		"token": token,
 	}
+	eventBody, _ := json.Marshal(emailEvent)
+	err = rabbitmq.PublishMessage("email.send_magic_link", eventBody)
 
-	if err := s.EmailService.SendMagicLink(email, token); err != nil {
-		return err
+	if err != nil {
+		return &AppError{Code: "EMAIL_FAILED", Status: http.StatusInternalServerError, Msg: "Không thể đưa email vào hàng đợi."}
 	}
 
 	return nil

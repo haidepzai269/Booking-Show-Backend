@@ -2,6 +2,7 @@ package rabbitmq
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 )
 
@@ -43,6 +44,7 @@ func StartPaymentWorker(processFunc PaymentProcessFunc) {
 
 	go func() {
 		for d := range msgs {
+			fmt.Printf("📥 [RabbitMQ] Received message from payment.success: %s\n", string(d.Body))
 			var event PaymentEvent
 			if err := json.Unmarshal(d.Body, &event); err != nil {
 				log.Printf("Failed to unmarshal payment event: %v", err)

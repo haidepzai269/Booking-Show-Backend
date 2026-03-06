@@ -114,7 +114,7 @@ func (s *MovieService) GetHomeMovies() (*HomeMoviesResponse, error) {
 	// 3. Lưu vào Redis (TTL 5 phút cho trang chủ)
 	if redispkg.Client != nil {
 		if data, err := json.Marshal(result); err == nil {
-			redispkg.Client.Set(redispkg.Ctx, cacheKeyMoviesHome, data, 5*time.Minute)
+			redispkg.Client.Set(redispkg.Ctx, cacheKeyMoviesHome, data, 2*time.Hour)
 		}
 	}
 
