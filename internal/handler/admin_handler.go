@@ -407,7 +407,13 @@ func (h *AdminHandler) ListAdminShowtimes(c *gin.Context) {
 
 func (h *AdminHandler) ListAdminOrders(c *gin.Context) {
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
-	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "10"))
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "15"))
+	if page < 1 {
+		page = 1
+	}
+	if limit < 1 {
+		limit = 15
+	}
 	q := c.Query("q")
 
 	cacheKey := "admin:orders:list:" + strconv.Itoa(page) + ":" + strconv.Itoa(limit) + ":" + q

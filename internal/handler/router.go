@@ -144,6 +144,7 @@ func SetupRouter(r *gin.Engine, cfg *config.Config) {
 		// User profile
 		protected.GET("/users/me", userHandler.GetMe)
 		protected.PUT("/users/me", userHandler.UpdateMe)
+		protected.PATCH("/users/theme", userHandler.UpdateTheme)
 	}
 
 	// ─── Staff only (Admin + Cinema Manager) ─────────────────────────────────
@@ -174,7 +175,9 @@ func SetupRouter(r *gin.Engine, cfg *config.Config) {
 		admin.GET("/cinemas/:id/rooms", adminHandler.ListAdminRoomsByCinema)
 		admin.POST("/cinemas/:id/rooms", adminHandler.CreateRoom)
 		admin.DELETE("/rooms/:id", middleware.RequireRole("ADMIN"), adminHandler.DeleteRoom)
+		admin.GET("/rooms/:id/seats", adminHandler.GetRoomSeats)
 		admin.POST("/rooms/:id/seats", adminHandler.InitSeats)
+		admin.PUT("/rooms/:id/seats/layout", adminHandler.UpdateSeatsLayout)
 
 		// Concessions
 		admin.GET("/concessions", adminHandler.ListAdminConcessions)

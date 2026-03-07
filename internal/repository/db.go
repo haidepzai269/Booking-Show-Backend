@@ -13,7 +13,9 @@ var DB *gorm.DB
 
 // ConnectDB khởi tạo kết nối database sử dụng GORM
 func ConnectDB(cfg *config.Config) {
-	db, err := gorm.Open(postgres.Open(cfg.DBUrl), &gorm.Config{})
+	db, err := gorm.Open(postgres.Open(cfg.DBUrl), &gorm.Config{
+		PrepareStmt: false, // Disable prepare statement cache to avoid "cached plan must not change result type"
+	})
 	if err != nil {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}

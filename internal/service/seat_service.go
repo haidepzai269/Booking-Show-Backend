@@ -181,3 +181,33 @@ func (s *SeatService) InitSeats(roomID, showtimeID int) error {
 
 	return nil
 }
+
+type SeatLayoutUpdateDTO struct {
+	ID    int
+	X     float64
+	Y     float64
+	Angle float64
+}
+
+// UpdateSeatsLayout cập nhật hàng loạt tọa độ X, Y, Angle của ghế trong 1 phòng
+func (s *SeatService) UpdateSeatsLayout(roomID int, updates []SeatLayoutUpdateDTO) error {
+	tx := repository.DB.Begin()
+	if tx.Error != nil {
+		return tx.Error
+	}
+
+	for _, u := range updates {
+		// Update map chỉ các trường tọa độ để không ảnh hưởng dữ liệu khác
+		if err := tx.Model(&model.Seat{}).Where("id = ? AND room_id = ?", u.ID, roomID).
+			Updates(map[string]interface{}{
+				"x":     u.X,
+				"y":     u.Y,
+				"angle": u.Angle,
+			}).Error; err != nil {
+			tx.Rollback()
+			return err
+		}
+	}
+
+	return tx.Commit().Error
+}

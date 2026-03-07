@@ -74,6 +74,7 @@ func (h *AuthHandler) Login(c *gin.Context) {
 				"email":     user.Email,
 				"full_name": user.FullName,
 				"role":      user.Role,
+				"theme":     user.ThemePreference,
 			},
 		},
 	})
@@ -126,6 +127,7 @@ func (h *AuthHandler) VerifyMagicLink(c *gin.Context) {
 				"email":     user.Email,
 				"full_name": user.FullName,
 				"role":      user.Role,
+				"theme":     user.ThemePreference,
 			},
 		},
 	})

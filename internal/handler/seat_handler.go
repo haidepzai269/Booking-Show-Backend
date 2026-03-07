@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/booking-show/booking-show-api/internal/model"
+	"github.com/booking-show/booking-show-api/internal/repository"
 	"github.com/booking-show/booking-show-api/internal/service"
 	"github.com/booking-show/booking-show-api/pkg/sse"
 	"github.com/gin-gonic/gin"
@@ -35,15 +37,18 @@ func (h *SeatHandler) GetSeats(c *gin.Context) {
 
 	// Transform sang flat DTO cho frontend dễ xài
 	type SeatDTO struct {
-		ID         int    `json:"id"`
-		ShowtimeID int    `json:"showtime_id"`
-		SeatID     int    `json:"seat_id"`
-		Status     string `json:"status"`
-		Price      int    `json:"price"`
-		RoomID     int    `json:"room_id"`
-		RowChar    string `json:"row_char"`
-		SeatNumber int    `json:"seat_number"`
-		Type       string `json:"type"`
+		ID         int     `json:"id"`
+		ShowtimeID int     `json:"showtime_id"`
+		SeatID     int     `json:"seat_id"`
+		Status     string  `json:"status"`
+		Price      int     `json:"price"`
+		RoomID     int     `json:"room_id"`
+		RowChar    string  `json:"row_char"`
+		SeatNumber int     `json:"seat_number"`
+		Type       string  `json:"type"`
+		X          float64 `json:"x"`
+		Y          float64 `json:"y"`
+		Angle      float64 `json:"angle"`
 	}
 
 	var resp []SeatDTO
@@ -58,6 +63,9 @@ func (h *SeatHandler) GetSeats(c *gin.Context) {
 			RowChar:    s.Seat.RowChar,
 			SeatNumber: s.Seat.SeatNumber,
 			Type:       string(s.Seat.Type),
+			X:          s.Seat.X,
+			Y:          s.Seat.Y,
+			Angle:      s.Seat.Angle,
 		})
 	}
 
@@ -135,6 +143,22 @@ func (h *SeatHandler) UnlockSeats(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"success": true, "data": "Seats unlocked"})
 }
 
+func (h *AdminHandler) GetRoomSeats(c *gin.Context) {
+	roomID, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "invalid room ID"})
+		return
+	}
+
+	var seats []model.Seat
+	if err := repository.DB.Where("room_id = ?", roomID).Order("row_char ASC, seat_number ASC").Find(&seats).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": seats})
+}
+
 func (h *AdminHandler) InitSeats(c *gin.Context) {
 	roomID, err := strconv.Atoi(c.Param("id"))
 	if err != nil {
@@ -157,4 +181,49 @@ func (h *AdminHandler) InitSeats(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusCreated, gin.H{"success": true, "data": "Seats initialized locally"})
+}
+
+// UpdateSeatsLayoutReq chứa danh sách tọa độ mới của các ghế
+type UpdateSeatsLayoutReq struct {
+	Seats []struct {
+		ID    int     `json:"id" binding:"required"`
+		X     float64 `json:"x"`
+		Y     float64 `json:"y"`
+		Angle float64 `json:"angle"`
+	} `json:"seats" binding:"required,gt=0"`
+}
+
+// UpdateSeatsLayout xử lý Bulk Update vị trí ghế (Drag & Drop)
+func (h *AdminHandler) UpdateSeatsLayout(c *gin.Context) {
+	roomID, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "invalid room ID"})
+		return
+	}
+
+	var req UpdateSeatsLayoutReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": err.Error(), "code": "INVALID_INPUT"})
+		return
+	}
+
+	svc := &service.SeatService{}
+
+	// Convert sang dạng model
+	var seatUpdates []service.SeatLayoutUpdateDTO
+	for _, s := range req.Seats {
+		seatUpdates = append(seatUpdates, service.SeatLayoutUpdateDTO{
+			ID:    s.ID,
+			X:     s.X,
+			Y:     s.Y,
+			Angle: s.Angle,
+		})
+	}
+
+	if err := svc.UpdateSeatsLayout(roomID, seatUpdates); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"success": true, "message": "Seats layout updated successfully"})
 }

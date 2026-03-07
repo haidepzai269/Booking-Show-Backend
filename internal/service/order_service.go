@@ -11,6 +11,7 @@ import (
 	bookingredis "github.com/booking-show/booking-show-api/pkg/redis"
 	"github.com/booking-show/booking-show-api/pkg/sse"
 	"github.com/google/uuid"
+	"gorm.io/gorm"
 )
 
 type OrderService struct{}
@@ -443,6 +444,14 @@ func (s *OrderService) ListAdminOrders(page, limit int, q string) ([]model.Order
 	var orders []model.Order
 	var total int64
 
+	// Validate pagination
+	if page < 1 {
+		page = 1
+	}
+	if limit < 1 {
+		limit = 10
+	}
+
 	query := repository.DB.Model(&model.Order{})
 
 	if q != "" {
@@ -458,12 +467,16 @@ func (s *OrderService) ListAdminOrders(page, limit int, q string) ([]model.Order
 		}
 	}
 
+	// Calculate total using a clean subquery or cloning
 	if err := query.Count(&total).Error; err != nil {
 		return nil, 0, err
 	}
 
 	offset := (page - 1) * limit
-	if err := query.Preload("User").Preload("Showtime.Movie").
+
+	// Use Session(&gorm.Session{}) to ensure a fresh statement and avoid cached plan errors
+	if err := query.Session(&gorm.Session{}).Select("orders.*").
+		Preload("User").Preload("Showtime.Movie").
 		Order("orders.created_at DESC").Offset(offset).Limit(limit).Find(&orders).Error; err != nil {
 		return nil, 0, err
 	}

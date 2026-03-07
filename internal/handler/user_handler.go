@@ -19,18 +19,19 @@ func (h *UserHandler) GetMe(c *gin.Context) {
 	userID, _ := c.Get("userID")
 
 	type UserProfile struct {
-		ID        int    `json:"id"`
-		FullName  string `json:"full_name"`
-		Email     string `json:"email"`
-		Phone     string `json:"phone"`
-		Role      string `json:"role"`
-		CreatedAt string `json:"created_at"`
+		ID              int    `json:"id"`
+		FullName        string `json:"full_name"`
+		Email           string `json:"email"`
+		Phone           string `json:"phone"`
+		Role            string `json:"role"`
+		ThemePreference string `json:"theme_preference"`
+		CreatedAt       string `json:"created_at"`
 	}
 
 	var profile UserProfile
 	if err := repository.DB.
 		Table("users").
-		Select("id, full_name, email, phone, role, created_at").
+		Select("id, full_name, email, phone, role, theme_preference, created_at").
 		Where("id = ?", userID).
 		First(&profile).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"success": false, "error": "Không tìm thấy người dùng"})
@@ -89,4 +90,26 @@ func (h *UserHandler) UpdateMe(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"success": true, "message": "Cập nhật thông tin thành công"})
+}
+
+// UpdateTheme — PATCH /api/v1/users/theme
+func (h *UserHandler) UpdateTheme(c *gin.Context) {
+	userID, _ := c.Get("userID")
+
+	var req struct {
+		Theme string `json:"theme" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "Theme không hợp lệ"})
+		return
+	}
+
+	if err := repository.DB.Table("users").
+		Where("id = ?", userID).
+		Update("theme_preference", req.Theme).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "Không thể cập nhật theme"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"success": true, "message": "Cập nhật theme thành công"})
 }
