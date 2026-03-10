@@ -5,6 +5,7 @@ import (
 
 	"github.com/booking-show/booking-show-api/internal/model"
 	"github.com/booking-show/booking-show-api/internal/repository"
+	"gorm.io/gorm"
 )
 
 type UserService struct{}
@@ -51,4 +52,35 @@ func (s *UserService) UpdateUserRole(id int, role string) error {
 	}
 
 	return nil
+}
+
+func (s *UserService) CalculateRank(spending float64) model.UserRank {
+	if spending >= 20000000 {
+		return model.RankDiamond
+	}
+	if spending >= 10000000 {
+		return model.RankPlatinum
+	}
+	if spending >= 5000000 {
+		return model.RankGold
+	}
+	if spending >= 2000000 {
+		return model.RankSilver
+	}
+	return model.RankBronze
+}
+
+func (s *UserService) UpdateRankAfterPayment(tx *gorm.DB, userID int, amount float64) error {
+	var user model.User
+	if err := tx.First(&user, userID).Error; err != nil {
+		return err
+	}
+
+	newSpending := user.TotalSpending + amount
+	newRank := s.CalculateRank(newSpending)
+
+	return tx.Model(&user).Updates(map[string]interface{}{
+		"total_spending": newSpending,
+		"rank":           newRank,
+	}).Error
 }

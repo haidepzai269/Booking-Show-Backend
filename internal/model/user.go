@@ -10,6 +10,16 @@ const (
 	RoleCinemaManager UserRole = "CINEMA_MANAGER"
 )
 
+type UserRank string
+
+const (
+	RankBronze   UserRank = "BRONZE"
+	RankSilver   UserRank = "SILVER"
+	RankGold     UserRank = "GOLD"
+	RankPlatinum UserRank = "PLATINUM"
+	RankDiamond  UserRank = "DIAMOND"
+)
+
 type User struct {
 	ID              int       `json:"id" gorm:"primaryKey;autoIncrement"`
 	FullName        string    `json:"full_name" gorm:"type:varchar(100);not null"`
@@ -17,6 +27,8 @@ type User struct {
 	Phone           string    `json:"phone" gorm:"type:varchar(20);default:''"`
 	PasswordHash    string    `json:"-" gorm:"type:varchar(255);not null"`
 	Role            UserRole  `json:"role" gorm:"type:varchar(20);default:'CUSTOMER'"`
+	Rank            UserRank  `json:"rank" gorm:"type:varchar(20);default:'BRONZE'"`
+	TotalSpending   float64   `json:"total_spending" gorm:"type:decimal(15,2);default:0"`
 	ThemePreference string    `json:"theme_preference" gorm:"type:varchar(20);default:'dark'"`
 	CreatedAt       time.Time `json:"created_at" gorm:"autoCreateTime"`
 	UpdatedAt       time.Time `json:"updated_at" gorm:"autoUpdateTime"`

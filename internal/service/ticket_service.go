@@ -220,6 +220,15 @@ func (s *TicketService) ProcessPaymentSuccess(orderIDStr, gateway, transactionID
 		log.Printf("✅ [ProcessPaymentSuccess] Created fallback payment")
 	}
 
+	// 5. Cập nhật chi tiêu và Rank cho User
+	userSvc := &UserService{}
+	if err := userSvc.UpdateRankAfterPayment(tx, order.UserID, float64(order.FinalAmount)); err != nil {
+		log.Printf("❌ [ProcessPaymentSuccess] Failed to update user rank: %v", err)
+		// Không rollback ở đây vì vé đã được tạo thành công, chỉ log lỗi để xử lý sau
+	} else {
+		log.Printf("✅ [ProcessPaymentSuccess] User rank updated successfully")
+	}
+
 	if err := tx.Commit().Error; err != nil {
 		log.Printf("❌ [ProcessPaymentSuccess] COMMIT FAILED: %v", err)
 		return err

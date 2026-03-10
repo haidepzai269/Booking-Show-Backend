@@ -19,19 +19,21 @@ func (h *UserHandler) GetMe(c *gin.Context) {
 	userID, _ := c.Get("userID")
 
 	type UserProfile struct {
-		ID              int    `json:"id"`
-		FullName        string `json:"full_name"`
-		Email           string `json:"email"`
-		Phone           string `json:"phone"`
-		Role            string `json:"role"`
-		ThemePreference string `json:"theme_preference"`
-		CreatedAt       string `json:"created_at"`
+		ID              int     `json:"id"`
+		FullName        string  `json:"full_name"`
+		Email           string  `json:"email"`
+		Phone           string  `json:"phone"`
+		Role            string  `json:"role"`
+		Rank            string  `json:"rank"`
+		TotalSpending   float64 `json:"total_spending"`
+		ThemePreference string  `json:"theme_preference"`
+		CreatedAt       string  `json:"created_at"`
 	}
 
 	var profile UserProfile
 	if err := repository.DB.
 		Table("users").
-		Select("id, full_name, email, phone, role, theme_preference, created_at").
+		Select("id, full_name, email, phone, role, rank, total_spending, theme_preference, created_at").
 		Where("id = ?", userID).
 		First(&profile).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"success": false, "error": "Không tìm thấy người dùng"})
@@ -48,19 +50,13 @@ func (h *UserHandler) GetMe(c *gin.Context) {
 		Where("orders.user_id = ? AND orders.status = 'COMPLETED'", userID).
 		Count(&totalTickets)
 
-	var totalSpent int64
-	repository.DB.Table("orders").
-		Where("user_id = ? AND status = 'COMPLETED'", userID).
-		Select("COALESCE(SUM(final_amount), 0)").
-		Scan(&totalSpent)
-
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"data": gin.H{
 			"user":          profile,
 			"total_orders":  totalOrders,
 			"total_tickets": totalTickets,
-			"total_spent":   totalSpent,
+			"total_spent":   profile.TotalSpending,
 		},
 	})
 }
