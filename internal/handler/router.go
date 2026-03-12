@@ -26,6 +26,7 @@ func SetupRouter(r *gin.Engine, cfg *config.Config) {
 	ticketHandler := NewTicketHandler()
 	personHandler := NewPersonHandler()
 	faqHandler := NewFAQHandler()
+	chatHandler := NewChatHandler()
 	userHandler := NewUserHandler()
 	campaignHandler := NewCampaignHandler()
 
@@ -82,9 +83,12 @@ func SetupRouter(r *gin.Engine, cfg *config.Config) {
 	// ─── Public: FAQ (AI Chatbot) ────────────────────────────────────────────
 	faq := v1.Group("/faq")
 	{
-		faq.POST("/ask", faqHandler.AskFAQ)
+		faq.POST("/ask", faqHandler.AskFAQ)   // Legacy endpoint (giữ để backward compat)
 		faq.GET("/top", faqHandler.GetTopFAQs)
 	}
+
+	// ─── Public: Chat (OpenClaw Orchestrator + Semantic Cache) ───────────────
+	v1.POST("/chat", chatHandler.Chat)
 
 	// ─── Public: Campaigns (Trang khuyến mãi) ───────────────────────────────────
 	campaigns := v1.Group("/campaigns")

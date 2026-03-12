@@ -76,6 +76,11 @@ type SeatUpdateEvent struct {
 
 // BroadcastSeatUpdate Gửi sự kiện lên Redis Pub/Sub để tất cả các instance đều nhận được
 func BroadcastSeatUpdate(showtimeID int, seatID int, status string) {
+	if bookingredis.Client == nil {
+		fmt.Println("⚠️ [SSE] Redis Client unavailable, skipping BroadcastSeatUpdate to pubsub.")
+		return
+	}
+
 	event := SeatUpdateEvent{
 		ShowtimeID: showtimeID,
 		SeatID:     seatID,
@@ -89,6 +94,11 @@ func BroadcastSeatUpdate(showtimeID int, seatID int, status string) {
 
 // StartSubscriber Lắng nghe các sự kiện từ Redis để cập nhật SSE Hub local
 func StartSubscriber() {
+	if bookingredis.Client == nil {
+		fmt.Println("⚠️ [SSE] Redis Client unavailable, stopping Subscriber for sse:seat_updates.")
+		return
+	}
+
 	pubsub := bookingredis.Client.Subscribe(context.Background(), "sse:seat_updates")
 	defer pubsub.Close()
 
