@@ -15,6 +15,10 @@ type PaymentEvent struct {
 type PaymentProcessFunc func(orderID, gateway, transactionID string) error
 
 func StartPaymentWorker(processFunc PaymentProcessFunc) {
+	if Channel == nil {
+		log.Println("⚠️ [RabbitMQ Worker] Channel is nil, skipping StartPaymentWorker.")
+		return
+	}
 	q, err := Channel.QueueDeclare(
 		"payment.success",
 		true,
@@ -24,7 +28,8 @@ func StartPaymentWorker(processFunc PaymentProcessFunc) {
 		nil,
 	)
 	if err != nil {
-		log.Fatalf("Failed to declare a queue: %v", err)
+		log.Printf("Failed to declare a queue: %v", err)
+		return
 	}
 
 	msgs, err := Channel.Consume(

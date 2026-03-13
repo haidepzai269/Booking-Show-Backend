@@ -47,11 +47,21 @@ func main() {
 	handler.SetupRouter(r, cfg)
 
 	r.GET("/ping", func(c *gin.Context) {
+		redisStatus := "connected"
+		if redis.Client == nil {
+			redisStatus = "disconnected (caching disabled)"
+		}
+
+		rabbitStatus := "connected"
+		if rabbitmq.Conn == nil {
+			rabbitStatus = "disconnected (queue disabled)"
+		}
+
 		c.JSON(http.StatusOK, gin.H{
 			"message": "pong",
 			"db":      "connected",
-			"redis":   "connected",
-			"rabbit":  "connected",
+			"redis":   redisStatus,
+			"rabbit":  rabbitStatus,
 		})
 	})
 

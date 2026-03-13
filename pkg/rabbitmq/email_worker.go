@@ -13,6 +13,10 @@ type EmailEvent struct {
 type EmailProcessFunc func(email, token string) error
 
 func StartEmailWorker(processFunc EmailProcessFunc) {
+	if Channel == nil {
+		log.Println("⚠️ [RabbitMQ Email Worker] Channel is nil, skipping StartEmailWorker.")
+		return
+	}
 	q, err := Channel.QueueDeclare(
 		"email.send_magic_link",
 		true,
@@ -22,7 +26,8 @@ func StartEmailWorker(processFunc EmailProcessFunc) {
 		nil,
 	)
 	if err != nil {
-		log.Fatalf("Failed to declare a queue for email: %v", err)
+		log.Printf("Failed to declare a queue for email: %v", err)
+		return
 	}
 
 	msgs, err := Channel.Consume(

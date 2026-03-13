@@ -5,17 +5,30 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
+	"os"
+	"regexp"
 	"time"
 )
 
 type AIService struct {
-	groqAPIKey string
+	groqAPIKey       string
+	huggingFaceToken string
 }
 
-func NewAIService(apiKey string) *AIService {
+func NewAIService(groqKey, hfToken string) *AIService {
+	// Nếu truyền vào trống, thử đọc từ env (để hỗ trợ các chỗ gọi chưa refactor)
+	if groqKey == "" {
+		groqKey = os.Getenv("GROQ_API_KEY")
+	}
+	if hfToken == "" {
+		hfToken = os.Getenv("HUGGINGFACE_TOKEN")
+	}
+
 	return &AIService{
-		groqAPIKey: apiKey,
+		groqAPIKey:       groqKey,
+		huggingFaceToken: hfToken,
 	}
 }
 
@@ -77,7 +90,7 @@ Dưới đây là DANH SÁCH PHIM HIỆN CÓ (dữ liệu RAG):
 	req.Header.Set("Authorization", "Bearer "+s.groqAPIKey)
 	req.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{Timeout: 5 * time.Second} // Groq rất nhanh, 5s là đủ
+	client := &http.Client{Timeout: 10 * time.Second} // Tăng timeout lên 10s để ổn định hơn
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to call Groq API: %v", err)
@@ -100,23 +113,31 @@ Dưới đây là DANH SÁCH PHIM HIỆN CÓ (dữ liệu RAG):
 
 	// Lấy kết quả từ AI (dạng chuỗi mảng JSON)
 	content := groqRes.Choices[0].Message.Content
+	log.Printf("[Groq AI Debug] Raw Content: %s\n", content)
 
 	var matchedIDs []int
 	err = json.Unmarshal([]byte(content), &matchedIDs)
 	if err != nil {
-		// Thử lọc nếu AI có chen thêm text không mong muốn (mặc dù đã cấm bằng system prompt)
-		return nil, fmt.Errorf("failed to parse AI response to []int: %v (Raw: %s)", err, content)
+		// Thử lọc nếu AI có chen thêm text bằng Regex linh hoạt hơn
+		re := regexp.MustCompile(`\[\s*\d*(?:\s*,\s*\d+)*\s*\]`)
+		match := re.FindString(content)
+		if match != "" {
+			err = json.Unmarshal([]byte(match), &matchedIDs)
+		}
+
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse AI response to []int: %v (Raw: %s)", err, content)
+		}
 	}
 
+	log.Printf("[Groq AI Debug] Parsed IDs: %v\n", matchedIDs)
 	return matchedIDs, nil
 }
 
 // GenerateEmbedding - Gọi HuggingFace API để tạo Vector cho nội dung (chuẩn bị dữ liệu cho vector search pgvector)
 func (s *AIService) GenerateEmbedding(text string) ([]float32, error) {
-	// Sử dụng model miễn phí của HuggingFace (all-MiniLM-L6-v2: 384 dimensions)
-	// Lưu ý: Trong môi trường production thực tế, nên cung cấp Authorization: Bearer <HF_TOKEN>
-	// hoặc tự host pipeline python. Trong project này, ta gọi thẳng public inference.
-	url := "https://api-inference.huggingface.co/pipeline/feature-extraction/sentence-transformers/all-MiniLM-L6-v2"
+	// Sử dụng model của HuggingFace (all-MiniLM-L6-v2: 384 dimensions)
+	url := "https://router.huggingface.co/hf-inference/models/sentence-transformers/all-MiniLM-L6-v2/pipeline/feature-extraction"
 
 	payload := map[string]interface{}{
 		"inputs": text,
@@ -128,6 +149,9 @@ func (s *AIService) GenerateEmbedding(text string) ([]float32, error) {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if s.huggingFaceToken != "" {
+		req.Header.Set("Authorization", "Bearer "+s.huggingFaceToken)
+	}
 
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req)

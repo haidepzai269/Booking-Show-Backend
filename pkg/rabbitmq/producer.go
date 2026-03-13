@@ -8,6 +8,10 @@ import (
 )
 
 func PublishMessage(queueName string, body []byte) error {
+	if Channel == nil {
+		log.Println("⚠️ [RabbitMQ Producer] Channel is nil, skipping PublishMessage.")
+		return nil // Hoặc trả về error tùy logic, ở đây chọn im lặng để không gây crash
+	}
 	q, err := Channel.QueueDeclare(
 		queueName,
 		true,  // durable

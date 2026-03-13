@@ -1,10 +1,11 @@
-﻿package service
+package service
 
 import (
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/booking-show/booking-show-api/internal/model"
@@ -176,8 +177,7 @@ func (s *MovieService) CreateMovie(req CreateMovieReq) (*model.Movie, error) {
 		movie.Genres = genres
 	}
 
-	// Auto generate embedding from Title and Description
-	aiSvc := NewAIService("")
+	aiSvc := NewAIService("", "")
 	if vec, err := aiSvc.GenerateEmbedding(req.Title + ". " + req.Description); err == nil && len(vec) == 384 {
 		v := pgvector.NewVector(vec)
 		movie.Embedding = &v
@@ -262,7 +262,7 @@ func (s *MovieService) UpdateMovie(id int, req UpdateMovieReq) (*model.Movie, er
 
 	// Update embedding if title or description changed
 	if req.Title != "" || req.Description != "" {
-		aiSvc := NewAIService("")
+		aiSvc := NewAIService("", "")
 		if vec, err := aiSvc.GenerateEmbedding(movie.Title + ". " + movie.Description); err == nil && len(vec) == 384 {
 			v := pgvector.NewVector(vec)
 			movie.Embedding = &v
@@ -365,6 +365,39 @@ type SearchMoviesReq struct {
 	Limit   int    // mặc định 20
 }
 
+// GetMoviesMeta - Lấy metadata của các phim đang chiếu để làm context cho AI (RAG)
+func (s *MovieService) GetMoviesMeta() (string, error) {
+	cacheKey := "movies:meta:rag"
+	if redispkg.Client != nil {
+		if cached, err := redispkg.Client.Get(redispkg.Ctx, cacheKey).Result(); err == nil && cached != "" {
+			log.Printf("[RAG Meta] Cache Hit (len: %d)\n", len(cached))
+			return cached, nil
+		}
+	}
+
+	var movies []model.Movie
+	if err := repository.DB.Preload("Genres").Where("is_active = ?", true).Limit(50).Find(&movies).Error; err != nil {
+		log.Printf("[RAG Meta Error]: %v\n", err)
+		return "", err
+	}
+	log.Printf("[RAG Meta] Fetched %d movies from DB\n", len(movies))
+
+	var sb strings.Builder
+	for _, m := range movies {
+		genres := ""
+		for _, g := range m.Genres {
+			genres += g.Name + ", "
+		}
+		sb.WriteString(fmt.Sprintf("ID: %d | Tên: %s | Thể loại: %s | Mô tả: %.200s\n", m.ID, m.Title, genres, m.Description))
+	}
+
+	meta := sb.String()
+	if redispkg.Client != nil {
+		redispkg.Client.Set(redispkg.Ctx, cacheKey, meta, 30*time.Minute)
+	}
+	return meta, nil
+}
+
 // SearchMovies - Tim phim theo tu khoa ket hop RAG AI (Groq) & Fuzzy Search (pg_trgm)
 func (s *MovieService) SearchMovies(req SearchMoviesReq) ([]model.Movie, error) {
 	if req.Limit <= 0 || req.Limit > 50 {
@@ -395,22 +428,57 @@ func (s *MovieService) SearchMovies(req SearchMoviesReq) ([]model.Movie, error) 
 	var movies []model.Movie
 
 	if req.Query != "" {
-		// 1. Thu dung AI Search (RAG) truoc neu query co y nghia (du dai)
+		// 1. Phân tích ngữ nghĩa bằng LLM (Groq)
 		if len(req.Query) >= 3 {
-			aiSvc := NewAIService("")
+			meta, err := s.GetMoviesMeta()
+			if err != nil {
+				log.Printf("[AI Search] GetMoviesMeta failed: %v\n", err)
+			}
+			
+			if meta != "" {
+				log.Printf("[AI Search] Calling AnalyzeSearchQuery with meta len: %d\n", len(meta))
+				aiSvc := NewAIService("", "")
+				matchedIDs, err := aiSvc.AnalyzeSearchQuery(req.Query, meta)
+				if err != nil {
+					log.Printf("[AI Search Error]: %v\n", err)
+				}
+				if err == nil && len(matchedIDs) > 0 {
+					log.Printf("[AI LLM Search] Query: '%s' -> Matched IDs: %v\n", req.Query, matchedIDs)
+					if err := repository.DB.Preload("Genres").Where("id IN ?", matchedIDs).Find(&movies).Error; err == nil && len(movies) > 0 {
+						// Sắp xếp kết quả theo thứ tự AI trả về
+						idMap := make(map[int]model.Movie)
+						for _, m := range movies {
+							idMap[m.ID] = m
+						}
+						var sortedMovies []model.Movie
+						for _, id := range matchedIDs {
+							if m, ok := idMap[id]; ok {
+								sortedMovies = append(sortedMovies, m)
+							}
+						}
+						
+						if redispkg.Client != nil {
+							if data, err := json.Marshal(sortedMovies); err == nil {
+								redispkg.Client.Set(redispkg.Ctx, cacheKey, data, 5*time.Minute)
+							}
+						}
+						return sortedMovies, nil
+					}
+				} else if err != nil {
+					log.Printf("[AI LLM Error]: %v\n", err)
+				}
+			}
+
+			// 2. Fallback: AI Vector Search (pgvector)
+			aiSvc := NewAIService("", "")
 			embedding, err := aiSvc.GenerateEmbedding(req.Query)
 
 			if err == nil && len(embedding) > 0 {
 				vec := pgvector.NewVector(embedding)
-				// Dùng Cosine Distance (<=>) của pgvector
 				aiDB := repository.DB.Preload("Genres").Where("is_active = ?", true).
 					Order(gorm.Expr("NULLIF(embedding::text, '')::vector <=> ?", vec))
 
-				if err := aiDB.Limit(req.Limit).Find(&movies).Error; err != nil {
-					return nil, err
-				}
-
-				if len(movies) > 0 {
+				if err := aiDB.Limit(req.Limit).Find(&movies).Error; err == nil && len(movies) > 0 {
 					log.Printf("[AI Vector Search] Query: '%s' -> Found %d\n", req.Query, len(movies))
 					if redispkg.Client != nil {
 						if data, err := json.Marshal(movies); err == nil {
@@ -419,8 +487,6 @@ func (s *MovieService) SearchMovies(req SearchMoviesReq) ([]model.Movie, error) 
 					}
 					return movies, nil
 				}
-			} else {
-				log.Printf("[AI Vector Error]: %v\n", err)
 			}
 		}
 

@@ -35,7 +35,8 @@ type Config struct {
 	PayOSAPIKey      string
 	PayOSChecksumKey string
 	// AI
-	GroqAPIKey string
+	GroqAPIKey       string
+	HuggingFaceToken string
 }
 
 // LoadEnv loads environment variables from .env file
@@ -88,7 +89,8 @@ func LoadEnv() *Config {
 		PayOSAPIKey:      getEnv("PAYOS_API_KEY", ""),
 		PayOSChecksumKey: getEnv("PAYOS_CHECKSUM_KEY", ""),
 		// AI
-		GroqAPIKey: getEnv("GROQ_API_KEY", ""),
+		GroqAPIKey:       getEnv("GROQ_API_KEY", ""),
+		HuggingFaceToken: getEnv("HUGGINGFACE_TOKEN", ""),
 	}
 }
 

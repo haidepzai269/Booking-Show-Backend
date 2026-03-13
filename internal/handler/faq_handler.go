@@ -95,7 +95,7 @@ func (h *FAQHandler) AskFAQ(c *gin.Context) {
 	}
 	wg.Wait()
 
-	aiSvc := service.NewAIService(groqKey)
+	aiSvc := service.NewAIService("", "")
 	answer, err := aiSvc.AnswerFAQ(req.Question, metaStr.String())
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "AI đang bận, xin vui lòng thử lại sau.", "details": err.Error()})

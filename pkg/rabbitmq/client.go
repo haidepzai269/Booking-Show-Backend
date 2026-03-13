@@ -13,13 +13,18 @@ var Channel *amqp.Channel
 func ConnectRabbitMQ(cfg *config.Config) {
 	conn, err := amqp.Dial(cfg.RabbitMQUrl)
 	if err != nil {
-		log.Fatalf("Failed to connect to RabbitMQ: %v", err)
+		log.Printf("Warning: Failed to connect to RabbitMQ: %v. Message queue features will be disabled.", err)
+		Conn = nil
+		Channel = nil
+		return
 	}
 	Conn = conn
 
 	ch, err := conn.Channel()
 	if err != nil {
-		log.Fatalf("Failed to open a RabbitMQ channel: %v", err)
+		log.Printf("Warning: Failed to open a RabbitMQ channel: %v", err)
+		Channel = nil
+		return
 	}
 	Channel = ch
 

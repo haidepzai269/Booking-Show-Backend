@@ -21,7 +21,9 @@ func ConnectRedis(cfg *config.Config) {
 
 	pong, err := Client.Ping(Ctx).Result()
 	if err != nil {
-		log.Fatalf("Failed to connect to Redis: %v", err)
+		log.Printf("Warning: Failed to connect to Redis: %v. Caching will be disabled.", err)
+		Client = nil
+		return
 	}
 	log.Println("Redis connected successfully!", pong)
 }

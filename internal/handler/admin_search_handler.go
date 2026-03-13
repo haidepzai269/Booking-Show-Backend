@@ -182,9 +182,50 @@ func searchMoviesWithAI(q, like string, aiUsed *bool) []SearchResultMovie {
 		}
 	}
 
-	// --- Thử AI Vector nếu query đủ dài ---
+	// --- Thử AI LLM Phân tích ngữ nghĩa nếu query đủ dài (Hybrid LLM Search) ---
 	if len(q) >= 3 {
-		aiSvc := service.NewAIService("")
+		movieSvc := &service.MovieService{}
+		meta, _ := movieSvc.GetMoviesMeta()
+		if meta != "" {
+			aiSvc := service.NewAIService("", "")
+			matchedIDs, err := aiSvc.AnalyzeSearchQuery(q, meta)
+			if err == nil && len(matchedIDs) > 0 {
+				log.Printf("[Admin AI LLM Search] q='%s' -> Matched IDs: %v", q, matchedIDs)
+				var allMovies []model.Movie
+				repository.DB.Where("id IN ? AND is_active = ?", matchedIDs, true).Find(&allMovies)
+
+				if len(allMovies) > 0 {
+					// Sắp xếp theo thứ tự AI trả về
+					idMap := make(map[int]model.Movie)
+					for _, m := range allMovies {
+						idMap[m.ID] = m
+					}
+					var results []SearchResultMovie
+					for _, id := range matchedIDs {
+						if m, ok := idMap[id]; ok {
+							results = append(results, SearchResultMovie{
+								ID:       m.ID,
+								Title:    m.Title,
+								Poster:   m.PosterURL,
+								IsActive: m.IsActive,
+								AIMatch:  true,
+							})
+						}
+					}
+
+					*aiUsed = true
+					if redispkg.Client != nil {
+						if data, err := json.Marshal(results); err == nil {
+							redispkg.Client.Set(redispkg.Ctx, aiCacheKey, data, adminAISearchTTL)
+						}
+					}
+					return results
+				}
+			}
+		}
+
+		// --- Fallback: AI Vector Search ---
+		aiSvc := service.NewAIService("", "")
 		embedding, err := aiSvc.GenerateEmbedding(q)
 		if err == nil && len(embedding) > 0 {
 			var allMovies []model.Movie

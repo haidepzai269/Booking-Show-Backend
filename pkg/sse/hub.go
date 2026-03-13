@@ -83,12 +83,23 @@ func BroadcastSeatUpdate(showtimeID int, seatID int, status string) {
 	}
 	payload, _ := json.Marshal(event)
 
-	fmt.Printf("🚀 [Redis PUBLISH] sse:seat_updates -> %s\n", string(payload))
-	bookingredis.Client.Publish(context.Background(), "sse:seat_updates", payload)
+	fmt.Printf("🚀 [Seat Update] ShowtimeID=%d, SeatID=%d, Status=%s\n", showtimeID, seatID, status)
+	if bookingredis.Client != nil {
+		fmt.Printf("🚀 [Redis PUBLISH] sse:seat_updates -> %s\n", string(payload))
+		bookingredis.Client.Publish(context.Background(), "sse:seat_updates", payload)
+	} else {
+		// Nếu không có Redis, ta vẫn broadcast local cho instance hiện tại
+		sseMsg := fmt.Sprintf(`{"seat_id": %d, "status": "%s"}`, seatID, status)
+		GetHub(showtimeID).Broadcast(sseMsg)
+	}
 }
 
 // StartSubscriber Lắng nghe các sự kiện từ Redis để cập nhật SSE Hub local
 func StartSubscriber() {
+	if bookingredis.Client == nil {
+		fmt.Println("⚠️ [SSE Subscriber] Redis client is nil, skipping Redis subscription. Real-time sync across instances will be disabled.")
+		return
+	}
 	pubsub := bookingredis.Client.Subscribe(context.Background(), "sse:seat_updates")
 	defer pubsub.Close()
 

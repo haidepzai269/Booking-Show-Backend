@@ -1,2 +1,29 @@
-﻿.env
+# Binaries and executable files
 *.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Dependency directories
+node_modules/
+vendor/
+
+# Temporary files
+tmp/
+temp/
+*.log
+*.out
+
+# IDEs
+.vscode/
+.idea/
+
+# Go specific
+bin/
+obj/
