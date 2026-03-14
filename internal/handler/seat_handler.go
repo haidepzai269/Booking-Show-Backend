@@ -4,6 +4,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/booking-show/booking-show-api/internal/model"
 	"github.com/booking-show/booking-show-api/internal/repository"
@@ -37,35 +38,37 @@ func (h *SeatHandler) GetSeats(c *gin.Context) {
 
 	// Transform sang flat DTO cho frontend dễ xài
 	type SeatDTO struct {
-		ID         int     `json:"id"`
-		ShowtimeID int     `json:"showtime_id"`
-		SeatID     int     `json:"seat_id"`
-		Status     string  `json:"status"`
-		Price      int     `json:"price"`
-		RoomID     int     `json:"room_id"`
-		RowChar    string  `json:"row_char"`
-		SeatNumber int     `json:"seat_number"`
-		Type       string  `json:"type"`
-		X          float64 `json:"x"`
-		Y          float64 `json:"y"`
-		Angle      float64 `json:"angle"`
+		ID          int        `json:"id"`
+		ShowtimeID  int        `json:"showtime_id"`
+		SeatID      int        `json:"seat_id"`
+		Status      string     `json:"status"`
+		Price       int        `json:"price"`
+		LockedUntil *time.Time `json:"locked_until"`
+		RoomID      int        `json:"room_id"`
+		RowChar     string     `json:"row_char"`
+		SeatNumber  int        `json:"seat_number"`
+		Type        string     `json:"type"`
+		X           float64    `json:"x"`
+		Y           float64    `json:"y"`
+		Angle       float64    `json:"angle"`
 	}
 
 	var resp []SeatDTO
 	for _, s := range seats {
 		resp = append(resp, SeatDTO{
-			ID:         s.ID,
-			ShowtimeID: s.ShowtimeID,
-			SeatID:     s.SeatID,
-			Status:     string(s.Status),
-			Price:      s.Price,
-			RoomID:     s.Seat.RoomID,
-			RowChar:    s.Seat.RowChar,
-			SeatNumber: s.Seat.SeatNumber,
-			Type:       string(s.Seat.Type),
-			X:          s.Seat.X,
-			Y:          s.Seat.Y,
-			Angle:      s.Seat.Angle,
+			ID:          s.ID,
+			ShowtimeID:  s.ShowtimeID,
+			SeatID:      s.SeatID,
+			Status:      string(s.Status),
+			Price:       s.Price,
+			LockedUntil: s.LockedUntil,
+			RoomID:      s.Seat.RoomID,
+			RowChar:     s.Seat.RowChar,
+			SeatNumber:  s.Seat.SeatNumber,
+			Type:        string(s.Seat.Type),
+			X:           s.Seat.X,
+			Y:           s.Seat.Y,
+			Angle:       s.Seat.Angle,
 		})
 	}
 

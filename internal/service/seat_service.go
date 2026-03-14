@@ -36,7 +36,29 @@ func (s *SeatService) GetSeats(showtimeID int) ([]model.ShowtimeSeat, error) {
 		return nil, err
 	}
 
-	// 3. Lưu vào Cache với thời gian sống ngắn (2 giây) để phục vụ load test
+	// 3. Read-Repair: Giải phóng ghế hết hạn ngay lập tức nếu thấy
+	now := time.Now()
+	for i := range seats {
+		if seats[i].Status == "LOCKED" && seats[i].LockedUntil != nil && seats[i].LockedUntil.Before(now) {
+			seats[i].Status = "AVAILABLE"
+			seats[i].LockedBy = nil
+			seats[i].LockedUntil = nil
+			// Cập nhật ngầm vào DB (không chặn request chính nếu có thể, hoặc làm đồng bộ để chính xác)
+			repository.DB.Model(&seats[i]).Updates(map[string]interface{}{
+				"status":       "AVAILABLE",
+				"locked_by":    nil,
+				"locked_until": nil,
+			})
+			// Xóa Redis key và phát SSE
+			key := fmt.Sprintf("lock:showtime_seat:%d:%d", showtimeID, seats[i].ID)
+			if bookingredis.Client != nil {
+				bookingredis.Client.Del(ctx, key)
+			}
+			sse.BroadcastSeatUpdate(showtimeID, seats[i].ID, "AVAILABLE")
+		}
+	}
+
+	// 4. Lưu vào Cache với thời gian sống ngắn (2 giây) nếu có thay đổi hoặc cache trống
 	if bookingredis.Client != nil {
 		if seatsData, err := json.Marshal(seats); err == nil {
 			bookingredis.Client.Set(ctx, cacheKey, seatsData, 2*time.Second)
@@ -88,7 +110,10 @@ func (s *SeatService) LockSeat(req LockSeatReq, userID int) error {
 	}()
 
 	var seats []model.ShowtimeSeat
-	if err := tx.Where("id IN ? AND showtime_id = ? AND status = 'AVAILABLE'", req.SeatIDs, req.ShowtimeID).Find(&seats).Error; err != nil {
+	// Cho phép lock nếu ghế AVAILABLE HOẶC ghế đang LOCKED nhưng đã hết hạn (locked_until < now)
+	now := time.Now()
+	if err := tx.Where("id IN ? AND showtime_id = ? AND (status = 'AVAILABLE' OR (status = 'LOCKED' AND locked_until < ?))", 
+		req.SeatIDs, req.ShowtimeID, now).Find(&seats).Error; err != nil {
 		tx.Rollback()
 		s.unlockRedisKeys(lockedKeys)
 		return err
@@ -97,15 +122,15 @@ func (s *SeatService) LockSeat(req LockSeatReq, userID int) error {
 	if len(seats) != len(req.SeatIDs) {
 		tx.Rollback()
 		s.unlockRedisKeys(lockedKeys)
-		return errors.New("mismatch seat query, maybe someone changed db direct")
+		return errors.New("một số ghế bạn chọn đã bị người khác đặt hoặc đang trong quá trình thanh toán")
 	}
 
 	for _, seat := range seats {
 		seat.Status = "LOCKED"
 		userIDPtr := userID
 		seat.LockedBy = &userIDPtr
-		now := time.Now().Add(lockDuration)
-		seat.LockedUntil = &now
+		until := now.Add(lockDuration)
+		seat.LockedUntil = &until
 		if err := tx.Save(&seat).Error; err != nil {
 			tx.Rollback()
 			s.unlockRedisKeys(lockedKeys)
