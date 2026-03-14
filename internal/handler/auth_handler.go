@@ -49,6 +49,29 @@ func (h *AuthHandler) Register(c *gin.Context) {
 	c.JSON(http.StatusCreated, gin.H{"success": true, "data": "User registered successfully"})
 }
 
+func (h *AuthHandler) CheckAvailability(c *gin.Context) {
+	value := c.Query("value")
+	fieldType := c.Query("type") // "email" or "fullname"
+
+	if fieldType != "email" && fieldType != "fullname" && fieldType != "username" {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "Type must be email, fullname or username"})
+		return
+	}
+
+	available, err := h.AuthService.CheckAvailability(value, fieldType)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "Internal server error"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data": gin.H{
+			"available": available,
+		},
+	})
+}
+
 func (h *AuthHandler) Login(c *gin.Context) {
 	var req service.LoginReq
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -74,15 +97,14 @@ func (h *AuthHandler) Login(c *gin.Context) {
 				"email":     user.Email,
 				"full_name": user.FullName,
 				"role":      user.Role,
-				"theme":     user.ThemePreference,
+				"theme":     user.Theme,
+				"language":  user.Language,
 			},
 		},
 	})
 }
 
-// Logout — POST /auth/logout: xóa refresh_token cookie
 func (h *AuthHandler) Logout(c *gin.Context) {
-	// Xóa httpOnly cookie refresh_token
 	c.SetCookie("refresh_token", "", -1, "/", "", false, true)
 	c.JSON(http.StatusOK, gin.H{"success": true, "message": "Đăng xuất thành công."})
 }
@@ -115,7 +137,6 @@ func (h *AuthHandler) VerifyMagicLink(c *gin.Context) {
 		return
 	}
 
-	// Set refresh token in httpOnly cookie
 	c.SetCookie("refresh_token", tokens.RefreshToken, 7*24*3600, "/", "", false, true)
 
 	c.JSON(http.StatusOK, gin.H{
@@ -127,7 +148,8 @@ func (h *AuthHandler) VerifyMagicLink(c *gin.Context) {
 				"email":     user.Email,
 				"full_name": user.FullName,
 				"role":      user.Role,
-				"theme":     user.ThemePreference,
+				"theme":     user.Theme,
+				"language":  user.Language,
 			},
 		},
 	})

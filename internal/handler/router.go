@@ -28,6 +28,7 @@ func SetupRouter(r *gin.Engine, cfg *config.Config) {
 	faqHandler := NewFAQHandler()
 	userHandler := NewUserHandler()
 	campaignHandler := NewCampaignHandler()
+	chatHandler := NewChatHandler()
 
 	// ─── Public: Auth ────────────────────────────────────────────────────────
 	auth := v1.Group("/auth")
@@ -38,6 +39,7 @@ func SetupRouter(r *gin.Engine, cfg *config.Config) {
 		auth.POST("/magic-link", authHandler.RequestMagicLink)
 		auth.POST("/magic-link/verify", authHandler.VerifyMagicLink)
 		auth.POST("/reset-password", authHandler.ResetPassword)
+		auth.GET("/check-availability", authHandler.CheckAvailability)
 	}
 
 	// ─── Public: Movies ──────────────────────────────────────────────────────
@@ -82,9 +84,12 @@ func SetupRouter(r *gin.Engine, cfg *config.Config) {
 	// ─── Public: FAQ (AI Chatbot) ────────────────────────────────────────────
 	faq := v1.Group("/faq")
 	{
-		faq.POST("/ask", faqHandler.AskFAQ)
+		faq.POST("/ask", middleware.SoftAuthMiddleware(cfg), faqHandler.AskFAQ)
 		faq.GET("/top", faqHandler.GetTopFAQs)
 	}
+
+	// ─── AI Chat History ─────────────────────────────────────────────────────
+	v1.GET("/chat/history", middleware.SoftAuthMiddleware(cfg), chatHandler.GetHistory)
 
 	// ─── Public: Campaigns (Trang khuyến mãi) ───────────────────────────────────
 	campaigns := v1.Group("/campaigns")
@@ -144,7 +149,6 @@ func SetupRouter(r *gin.Engine, cfg *config.Config) {
 		// User profile
 		protected.GET("/users/me", userHandler.GetMe)
 		protected.PUT("/users/me", userHandler.UpdateMe)
-		protected.PATCH("/users/theme", userHandler.UpdateTheme)
 	}
 
 	// ─── Staff only (Admin + Cinema Manager) ─────────────────────────────────

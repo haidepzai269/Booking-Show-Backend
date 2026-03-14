@@ -3,6 +3,7 @@ package handler
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"strings"
@@ -24,7 +25,8 @@ func NewFAQHandler() *FAQHandler {
 
 func (h *FAQHandler) AskFAQ(c *gin.Context) {
 	var req struct {
-		Question string `json:"question" binding:"required"`
+		Question  string `json:"question" binding:"required"`
+		SessionID string `json:"session_id" binding:"required"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -95,14 +97,112 @@ func (h *FAQHandler) AskFAQ(c *gin.Context) {
 	}
 	wg.Wait()
 
-	aiSvc := service.NewAIService("", "")
-	answer, err := aiSvc.AnswerFAQ(req.Question, metaStr.String())
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "AI đang bận, xin vui lòng thử lại sau.", "details": err.Error()})
-		return
+	// LẤY NGỮ CẢNH NGƯỜI DÙNG (LỊCH SỬ XEM PHIM)
+	userContext := "Người dùng chưa có lịch sử mua vé hoặc chưa đăng nhập."
+	if val, exists := c.Get("userID"); exists {
+		uid := val.(int)
+		orderSvc := &service.OrderService{}
+		orders, err := orderSvc.MyOrders(uid)
+		if err == nil && len(orders) > 0 {
+			var histStr strings.Builder
+			histStr.WriteString("Lịch sử xem phim của người dùng: ")
+			seenMovies := make(map[string]bool)
+			for _, o := range orders {
+				if o.Showtime.Movie.Title != "" && !seenMovies[o.Showtime.Movie.Title] {
+					seenMovies[o.Showtime.Movie.Title] = true
+					genreNames := ""
+					for _, g := range o.Showtime.Movie.Genres {
+						genreNames += g.Name + " "
+					}
+					histStr.WriteString(fmt.Sprintf("- %s (%s). ", o.Showtime.Movie.Title, strings.TrimSpace(genreNames)))
+				}
+			}
+			userContext = histStr.String()
+		}
 	}
 
-	// LƯU CÂU HỎI VÀ CÂU TRẢ LỜI VÀO DATABASE DƯỚI BACKGROUND
+	// CHUẨN HÓA CÂU HỎI ĐỂ CHECK CACHE (Semantic Level 1)
+	normalizedQ := strings.ToLower(req.Question)
+	normalizedQ = strings.TrimSuffix(normalizedQ, "?")
+	normalizedQ = strings.TrimSpace(normalizedQ)
+
+	cacheKey := fmt.Sprintf("faq:answer:%s", normalizedQ)
+	var answer string
+
+	// 1. Kiểm tra Redis Cache trước
+	if redispkg.Client != nil {
+		if cached, err := redispkg.Client.Get(redispkg.Ctx, cacheKey).Result(); err == nil && cached != "" {
+			answer = cached
+		}
+	}
+
+	// 2. Nếu Redis rỗng, kiểm tra DB (FAQLog)
+	if answer == "" {
+		var faq model.FAQLog
+		// Tìm câu hỏi tương tự (ILIKE) và đã có câu trả lời
+		if err := repository.DB.Where("question ILIKE ? AND answer IS NOT NULL AND answer != ''", req.Question).First(&faq).Error; err == nil {
+			answer = faq.Answer
+			// Lưu ngược lại vào Redis để lần sau nhanh hơn
+			if redispkg.Client != nil {
+				_ = redispkg.Client.Set(redispkg.Ctx, cacheKey, answer, 24*time.Hour).Err()
+			}
+		}
+	}
+
+	// 3. Nếu vẫn không có mới gọi AI
+	if answer == "" {
+		aiSvc := service.NewAIService("", "")
+
+		// LẤY DỮ LIỆU BẮP NƯỚC & KHUYẾN MÃI
+		var servicesData strings.Builder
+		conSvc := &service.ConcessionService{}
+		concessions, _ := conSvc.ListConcessions()
+		if len(concessions) > 0 {
+			servicesData.WriteString("--- DANH SÁCH BẮP NƯỚC (CONCESSIONS) ---\n")
+			for _, c := range concessions {
+				servicesData.WriteString(fmt.Sprintf("- %s: %d VNĐ (%s)\n", c.Name, c.Price, c.Description))
+			}
+		}
+
+		promoSvc := &service.PromotionService{}
+		promotions, _ := promoSvc.ListActivePromotions()
+		if len(promotions) > 0 {
+			servicesData.WriteString("\n--- MÃ GIẢM GIÁ ĐANG HOẠT ĐỘNG (PROMOTIONS) ---\n")
+			for _, p := range promotions {
+				servicesData.WriteString(fmt.Sprintf("- Mã %s: Giảm %d VNĐ (Điều kiện: Đơn hàng từ %d VNĐ). %s\n", p.Code, p.DiscountAmount, p.MinOrderValue, p.Description))
+			}
+		}
+
+		log.Printf("[AI CONTEXT] Services Data:\n%s\n", servicesData.String())
+
+		var err error
+		answer, err = aiSvc.AnswerFAQ(req.Question, metaStr.String(), userContext, servicesData.String())
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "AI đang bận, xin vui lòng thử lại sau.", "details": err.Error()})
+			return
+		}
+		// Lưu vào Redis cho những lần sau
+		if redispkg.Client != nil {
+			_ = redispkg.Client.Set(redispkg.Ctx, cacheKey, answer, 24*time.Hour).Err()
+		}
+	}
+
+	// Lấy userIDPtr từ context (nếu có)
+	var userIDPtr *uint
+	if val, exists := c.Get("userID"); exists {
+		uid := val.(int)
+		uidUint := uint(uid)
+		userIDPtr = &uidUint
+	}
+
+	// CHỈ LƯU TIN NHẮN VÀO LỊCH SỬ CHAT NẾU LÀ NGƯỜI DÙNG ĐÃ ĐĂNG NHẬP
+	if userIDPtr != nil {
+		chatSvc := service.NewChatService()
+		_ = chatSvc.SaveMessage(userIDPtr, req.SessionID, "user", req.Question)
+		_ = chatSvc.SaveMessage(userIDPtr, req.SessionID, "ai", answer)
+	}
+
+	// LƯU CÂU HỎI VÀ CÂU TRẢ LỜI VÀO DATABASE FAQ (THỐNG KÊ)
 	go func(q, a string) {
 		var faq model.FAQLog
 		if err := repository.DB.Where("question ILIKE ?", q).First(&faq).Error; err == nil {

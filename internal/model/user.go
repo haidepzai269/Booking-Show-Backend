@@ -23,13 +23,15 @@ const (
 type User struct {
 	ID              int       `json:"id" gorm:"primaryKey;autoIncrement"`
 	FullName        string    `json:"full_name" gorm:"type:varchar(100);not null"`
+	Username        string    `json:"username" gorm:"type:varchar(50);unique"`
 	Email           string    `json:"email" gorm:"type:varchar(255);unique;not null"`
 	Phone           string    `json:"phone" gorm:"type:varchar(20);default:''"`
 	PasswordHash    string    `json:"-" gorm:"type:varchar(255);not null"`
 	Role            UserRole  `json:"role" gorm:"type:varchar(20);default:'CUSTOMER'"`
 	Rank            UserRank  `json:"rank" gorm:"type:varchar(20);default:'BRONZE'"`
 	TotalSpending   float64   `json:"total_spending" gorm:"type:decimal(15,2);default:0"`
-	ThemePreference string    `json:"theme_preference" gorm:"type:varchar(20);default:'dark'"`
+	Theme           string    `json:"theme" gorm:"type:varchar(20);default:'dark'"`
+	Language        string    `json:"language" gorm:"type:varchar(10);default:'vi'"`
 	CreatedAt       time.Time `json:"created_at" gorm:"autoCreateTime"`
 	UpdatedAt       time.Time `json:"updated_at" gorm:"autoUpdateTime"`
 	IsActive        bool      `json:"is_active" gorm:"default:true"`

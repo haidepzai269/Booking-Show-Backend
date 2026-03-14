@@ -20,11 +20,13 @@ func (s *SeatService) GetSeats(showtimeID int) ([]model.ShowtimeSeat, error) {
 	cacheKey := fmt.Sprintf("cache:showtime_seats:%d", showtimeID)
 
 	// 1. Thử lấy từ Redis Cache trước
-	val, err := bookingredis.Client.Get(ctx, cacheKey).Result()
-	if err == nil {
-		var cachedSeats []model.ShowtimeSeat
-		if err := json.Unmarshal([]byte(val), &cachedSeats); err == nil {
-			return cachedSeats, nil
+	if bookingredis.Client != nil {
+		val, err := bookingredis.Client.Get(ctx, cacheKey).Result()
+		if err == nil {
+			var cachedSeats []model.ShowtimeSeat
+			if err := json.Unmarshal([]byte(val), &cachedSeats); err == nil {
+				return cachedSeats, nil
+			}
 		}
 	}
 
@@ -35,8 +37,10 @@ func (s *SeatService) GetSeats(showtimeID int) ([]model.ShowtimeSeat, error) {
 	}
 
 	// 3. Lưu vào Cache với thời gian sống ngắn (2 giây) để phục vụ load test
-	if seatsData, err := json.Marshal(seats); err == nil {
-		bookingredis.Client.Set(ctx, cacheKey, seatsData, 2*time.Second)
+	if bookingredis.Client != nil {
+		if seatsData, err := json.Marshal(seats); err == nil {
+			bookingredis.Client.Set(ctx, cacheKey, seatsData, 2*time.Second)
+		}
 	}
 
 	return seats, nil
@@ -58,16 +62,18 @@ func (s *SeatService) LockSeat(req LockSeatReq, userID int) error {
 	for _, seatID := range req.SeatIDs {
 		key := fmt.Sprintf("lock:showtime_seat:%d:%d", req.ShowtimeID, seatID)
 		// NX = Chỉ set nếu key chưa tồn tại
-		success, err := bookingredis.Client.SetNX(ctx, key, userID, lockDuration).Result()
-		if err != nil {
-			// Rollback Redis if err
-			s.unlockRedisKeys(lockedKeys)
-			return err
-		}
-		if !success {
-			// Rollback rediscover keys
-			s.unlockRedisKeys(lockedKeys)
-			return errors.New("one or more seats are already locked or booked")
+		if bookingredis.Client != nil {
+			success, err := bookingredis.Client.SetNX(ctx, key, userID, lockDuration).Result()
+			if err != nil {
+				// Rollback Redis if err
+				s.unlockRedisKeys(lockedKeys)
+				return err
+			}
+			if !success {
+				// Rollback rediscover keys
+				s.unlockRedisKeys(lockedKeys)
+				return errors.New("one or more seats are already locked or booked")
+			}
 		}
 		lockedKeys = append(lockedKeys, key)
 	}
@@ -118,6 +124,9 @@ func (s *SeatService) LockSeat(req LockSeatReq, userID int) error {
 }
 
 func (s *SeatService) unlockRedisKeys(keys []string) {
+	if bookingredis.Client == nil {
+		return
+	}
 	ctx := context.Background()
 	for _, k := range keys {
 		bookingredis.Client.Del(ctx, k)
@@ -141,8 +150,10 @@ func (s *SeatService) UnlockSeats(showtimeID, userID int, seatIDs []int) error {
 			return err
 		}
 		// Trigger SSE Event
-		key := fmt.Sprintf("lock:showtime_seat:%d:%d", showtimeID, seatID)
-		bookingredis.Client.Del(context.Background(), key)
+		if bookingredis.Client != nil {
+			key := fmt.Sprintf("lock:showtime_seat:%d:%d", showtimeID, seatID)
+			bookingredis.Client.Del(context.Background(), key)
+		}
 
 		sse.BroadcastSeatUpdate(showtimeID, seatID, "AVAILABLE")
 	}

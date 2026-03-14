@@ -24,7 +24,7 @@ type AuthService struct {
 }
 
 type RegisterReq struct {
-	FullName string `json:"full_name" binding:"required"`
+	FullName string `json:"full_name" binding:"required,min=3"`
 	Email    string `json:"email" binding:"required,email"`
 	Password string `json:"password" binding:"required,min=6"`
 }
@@ -41,9 +41,9 @@ type TokenResponse struct {
 
 func (s *AuthService) RegisterUser(req RegisterReq) error {
 	var count int64
-	repository.DB.Model(&model.User{}).Where("email = ?", req.Email).Count(&count)
+	repository.DB.Model(&model.User{}).Where("email = ? OR full_name = ?", req.Email, req.FullName).Count(&count)
 	if count > 0 {
-		return errors.New("email already exists")
+		return errors.New("email hoặc họ tên này đã được sử dụng")
 	}
 
 	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
@@ -53,12 +53,63 @@ func (s *AuthService) RegisterUser(req RegisterReq) error {
 
 	user := model.User{
 		FullName:     req.FullName,
+		Username:     req.FullName, // Hợp nhất: Dùng FullName làm Username trong DB
 		Email:        req.Email,
 		PasswordHash: string(hashedPassword),
 		Role:         model.RoleCustomer,
 	}
 
-	return repository.DB.Create(&user).Error
+	if err := repository.DB.Create(&user).Error; err != nil {
+		return err
+	}
+
+	// 1. Logic Write-through (Redis): Lưu trạng thái tồn tại vào Redis vĩnh viễn
+	if redis.Client != nil {
+		ctx := context.Background()
+		redis.Client.Set(ctx, fmt.Sprintf("exists:email:%s", user.Email), "1", 0)
+		redis.Client.Set(ctx, fmt.Sprintf("exists:username:%s", user.Username), "1", 0)
+	}
+
+	return nil
+}
+
+// CheckAvailability kiểm tra xem email hoặc họ tên đã tồn tại chưa
+func (s *AuthService) CheckAvailability(value string, fieldType string) (bool, error) {
+	if value == "" {
+		return true, nil
+	}
+
+	// Chuyển đổi mapping nếu fieldType là "fullname" (từ frontend) sang trường trong DB
+	dbField := fieldType
+	if fieldType == "fullname" {
+		dbField = "full_name"
+	}
+
+	cacheKey := fmt.Sprintf("exists:%s:%s", fieldType, value)
+
+	// 1. Đọc đệm (Read-aside): Kiểm tra trong Redis trước
+	if redis.Client != nil {
+		val, err := redis.Client.Get(context.Background(), cacheKey).Result()
+		if err == nil && val == "1" {
+			return false, nil // "Hit" -> Đã trung
+		}
+	}
+
+	// 2. Nếu không thấy trong Redis (Miss) hoặc Redis sập -> Thực hiện truy vấn vào PostgreSQL
+	var count int64
+	err := repository.DB.Model(&model.User{}).Where(fmt.Sprintf("%s = ?", dbField), value).Count(&count).Error
+	if err != nil {
+		return false, err // Lỗi DB
+	}
+
+	exists := count > 0
+
+	// 3. Nếu PostgreSQL báo trùng, hãy cập nhật lại giá trị đó vào Redis
+	if exists && redis.Client != nil {
+		redis.Client.Set(context.Background(), cacheKey, "1", 0)
+	}
+
+	return !exists, nil // Available if not exists
 }
 
 func (s *AuthService) LoginUser(req LoginReq) (*TokenResponse, *model.User, error) {

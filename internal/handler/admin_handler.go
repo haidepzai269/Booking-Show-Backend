@@ -74,37 +74,23 @@ func (h *AdminHandler) GetDashboardStats(c *gin.Context) {
 		}
 	}
 
-	// Tổng doanh thu (chỉ tính các đơn COMPLETED)
 	var totalRevenue int64
-	repository.DB.Model(&model.Order{}).
-		Where("status = ?", model.OrderCompleted).
-		Select("COALESCE(SUM(final_amount), 0)").
-		Scan(&totalRevenue)
-
-	// Tổng số đơn hàng
 	var totalOrders int64
-	repository.DB.Model(&model.Order{}).Count(&totalOrders)
-
-	// Tổng số users
 	var totalUsers int64
-	repository.DB.Model(&model.User{}).Count(&totalUsers)
-
-	// Tổng số vé đã bán
 	var totalTickets int64
-	repository.DB.Model(&model.Ticket{}).Count(&totalTickets)
-
-	// Tổng số phim đang hoạt động
 	var totalMovies int64
+	var monthlyRevenue int64
+
+	// Sử dụng transaction hoặc các truy vấn đồng thời để lấy dữ liệu nhanh hơn
+	repository.DB.Model(&model.Order{}).Where("status = ?", model.OrderCompleted).Select("COALESCE(SUM(final_amount), 0)").Scan(&totalRevenue)
+	repository.DB.Model(&model.Order{}).Count(&totalOrders)
+	repository.DB.Model(&model.User{}).Count(&totalUsers)
+	repository.DB.Model(&model.Ticket{}).Count(&totalTickets)
 	repository.DB.Model(&model.Movie{}).Where("is_active = ?", true).Count(&totalMovies)
 
-	// Doanh thu tháng này
 	now := time.Now()
 	startOfMonth := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
-	var monthlyRevenue int64
-	repository.DB.Model(&model.Order{}).
-		Where("status = ? AND created_at >= ?", model.OrderCompleted, startOfMonth).
-		Select("COALESCE(SUM(final_amount), 0)").
-		Scan(&monthlyRevenue)
+	repository.DB.Model(&model.Order{}).Where("status = ? AND created_at >= ?", model.OrderCompleted, startOfMonth).Select("COALESCE(SUM(final_amount), 0)").Scan(&monthlyRevenue)
 
 	// 10 đơn hàng gần nhất
 	type RecentOrder struct {
@@ -126,34 +112,53 @@ func (h *AdminHandler) GetDashboardStats(c *gin.Context) {
 		Limit(10).
 		Scan(&recentOrders)
 
-	// Doanh thu 7 ngày gần đây (chart data)
+	// TỐI ƯU HÓA: Doanh thu 7 ngày gần đây bằng 1 truy vấn GROUP BY
 	type DayRevenue struct {
 		Date    string `json:"date"`
 		Revenue int64  `json:"revenue"`
 		Orders  int64  `json:"orders"`
 	}
 	var chartData []DayRevenue
+	sevenDaysAgo := now.AddDate(0, 0, -6)
+	startOfSevenDaysAgo := time.Date(sevenDaysAgo.Year(), sevenDaysAgo.Month(), sevenDaysAgo.Day(), 0, 0, 0, 0, sevenDaysAgo.Location())
+
+	// Lấy dữ liệu gộp từ DB
+	type tempRow struct {
+		Day     string
+		Revenue int64
+		Count   int64
+	}
+	var rows []tempRow
+	repository.DB.Table("orders").
+		Select("DATE(created_at) as day, SUM(CASE WHEN status = ? THEN final_amount ELSE 0 END) as revenue, COUNT(*) as count", model.OrderCompleted).
+		Where("created_at >= ?", startOfSevenDaysAgo).
+		Group("DATE(created_at)").
+		Order("day ASC").
+		Scan(&rows)
+
+	// Map ngược lại để đảm bảo đủ 7 ngày (kể cả những ngày không có đơn)
+	rowMap := make(map[string]tempRow)
+	for _, r := range rows {
+		rowMap[r.Day] = r
+	}
+
 	for i := 6; i >= 0; i-- {
 		day := now.AddDate(0, 0, -i)
-		startOfDay := time.Date(day.Year(), day.Month(), day.Day(), 0, 0, 0, 0, day.Location())
-		endOfDay := startOfDay.Add(24 * time.Hour)
-
-		var dayRev int64
-		repository.DB.Model(&model.Order{}).
-			Where("status = ? AND created_at >= ? AND created_at < ?", model.OrderCompleted, startOfDay, endOfDay).
-			Select("COALESCE(SUM(final_amount), 0)").
-			Scan(&dayRev)
-
-		var dayOrders int64
-		repository.DB.Model(&model.Order{}).
-			Where("created_at >= ? AND created_at < ?", startOfDay, endOfDay).
-			Count(&dayOrders)
-
-		chartData = append(chartData, DayRevenue{
-			Date:    day.Format("2006-01-02"),
-			Revenue: dayRev,
-			Orders:  dayOrders,
-		})
+		dateStr := day.Format("2006-01-02")
+		
+		if r, ok := rowMap[dateStr]; ok {
+			chartData = append(chartData, DayRevenue{
+				Date:    dateStr,
+				Revenue: r.Revenue,
+				Orders:  r.Count,
+			})
+		} else {
+			chartData = append(chartData, DayRevenue{
+				Date:    dateStr,
+				Revenue: 0,
+				Orders:  0,
+			})
+		}
 	}
 
 	data := gin.H{

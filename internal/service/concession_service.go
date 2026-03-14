@@ -247,6 +247,14 @@ func (s *PromotionService) ValidatePromotion(req ValidatePromotionReq) (*Validat
 	}, &promo, nil
 }
 
+// ListActivePromotions — danh sach voucher dang hieu luc
+func (s *PromotionService) ListActivePromotions() ([]model.Promotion, error) {
+	var promos []model.Promotion
+	now := time.Now()
+	err := repository.DB.Where("is_active = ? AND valid_from <= ? AND valid_until >= ? AND used_count < usage_limit", true, now, now).Find(&promos).Error
+	return promos, err
+}
+
 func (s *PromotionService) ListAdminPromotions(page, limit int, q string) ([]model.Promotion, int64, error) {
 	var promos []model.Promotion
 	var total int64

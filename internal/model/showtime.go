@@ -12,9 +12,9 @@ const (
 
 type Showtime struct {
 	ID        int       `json:"id" gorm:"primaryKey;autoIncrement"`
-	MovieID   int       `json:"movie_id" gorm:"not null"`
+	MovieID   int       `json:"movie_id" gorm:"not null;index:idx_showtime_movie_start"`
 	RoomID    int       `json:"room_id" gorm:"not null"`
-	StartTime time.Time `json:"start_time" gorm:"not null"`
+	StartTime time.Time `json:"start_time" gorm:"not null;index:idx_showtime_movie_start"`
 	EndTime   time.Time `json:"end_time" gorm:"not null"`
 	BasePrice int       `json:"base_price" gorm:"not null"`
 	CreatedAt time.Time `json:"created_at" gorm:"autoCreateTime"`

@@ -28,14 +28,23 @@ func MigrateDB() {
 		&model.RefundRequest{},
 		&model.FAQLog{},
 		&model.Campaign{},
+		&model.ChatHistory{},
 	)
 
 	if err != nil {
 		log.Fatalf("Failed to auto migrate database: %v", err)
 	}
 
+	// Sửa lỗi cho dữ liệu cũ: Điền username bằng phần prefix của email nếu username đang trống
+	DB.Exec(`UPDATE users SET username = SPLIT_PART(email, '@', 1) || '_' || id WHERE username IS NULL OR username = '';`)
+
+	// Sau khi đã điền dữ liệu, ta có thể thêm ràng buộc NOT NULL thủ công nếu muốn, 
+	// hoặc để AutoMigrate xử lý ở lần sau bằng cách thêm lại tag not null vào model.
+	DB.Exec(`ALTER TABLE users ALTER COLUMN username SET NOT NULL;`)
+
 	// Tạo Index GIN với pg_trgm cho Users và Movies
 	DB.Exec(`CREATE INDEX IF NOT EXISTS idx_users_full_name_trgm ON users USING gin (full_name gin_trgm_ops);`)
+	DB.Exec(`CREATE INDEX IF NOT EXISTS idx_users_username_trgm ON users USING gin (username gin_trgm_ops);`)
 	DB.Exec(`CREATE INDEX IF NOT EXISTS idx_users_email_trgm ON users USING gin (email gin_trgm_ops);`)
 	DB.Exec(`CREATE INDEX IF NOT EXISTS idx_movies_title_trgm ON movies USING gin (title gin_trgm_ops);`)
 

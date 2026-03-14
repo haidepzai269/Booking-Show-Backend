@@ -205,17 +205,22 @@ func fetchGroqTrivias(movieTitle string) []MovieTrivia {
 	}
 
 	client := resty.New()
-	prompt := fmt.Sprintf(`Đóng vai một chuyên gia điện ảnh, hãy thông báo 3 câu hỏi (trivia) thú vị và sự thật ít người biết về bộ phim '%s'. Chỉ trả về cục JSON nguyên chất, bắt đầu bằng [ và kết thúc bằng ], trong đó mỗi object chứa "question" (câu hỏi) và "answer" (câu trả lời chi tiết, bằng tiếng Việt). Đừng nói thêm bất cứ câu chữ gì ngoài json.`, movieTitle)
+	prompt := fmt.Sprintf(`Đóng vai một chuyên gia điện ảnh, hãy thông báo 3 câu hỏi (trivia) thú vị và sự thật ít người biết về bộ phim '%s'. 
+
+Yêu cầu định dạng JSON:
+- Trả về một mảng JSON (Array), mỗi phần tử có "question" và "answer".
+- Ví dụ mẫu: [{"question": "...", "answer": "..."}, {"question": "...", "answer": "..."}]
+- CHỈ trả về JSON nguyên chất, KHÔNG giải thích, KHÔNG chứa markdown block.`, movieTitle)
 
 	requestBody := map[string]interface{}{
-		"model": "llama-3.1-8b-instant", // LLaMa 3 cũ đã bị Decommissioned, xài Mixtral hoac llama-3.1-8b-instant
+		"model": "llama-3.1-8b-instant",
 		"messages": []map[string]string{
 			{
 				"role":    "user",
 				"content": prompt,
 			},
 		},
-		"temperature": 0.7,
+		"temperature": 0.3, // Giảm temperature để output ổn định hơn
 	}
 
 	var groqRes groqResponse
@@ -233,17 +238,30 @@ func fetchGroqTrivias(movieTitle string) []MovieTrivia {
 
 	content := groqRes.Choices[0].Message.Content
 
-	var trivias []MovieTrivia
-
-	// Tìm xem câu trả lời có block JSON markdow hay không bằng regex
-	jsonPattern := regexp.MustCompile("(?s)\\[.*\\]")
+	// Thử bóc tách JSON từ chuỗi (đề phòng AI có thêm text)
+	jsonPattern := regexp.MustCompile(`(?s)\[.*\]`)
 	match := jsonPattern.FindString(content)
-
 	if match != "" {
 		content = match
 	}
 
+	var trivias []MovieTrivia
 	if err := json.Unmarshal([]byte(content), &trivias); err != nil {
+		// FALLBACK: Nếu AI trả về dạng Object { "Cau 1": {...} }, ta thử parse sang map rồi lấy value
+		var mapFallback map[string]MovieTrivia
+		objPattern := regexp.MustCompile(`(?s)\{.*\}`)
+		objMatch := objPattern.FindString(content)
+		if objMatch != "" {
+			if errMap := json.Unmarshal([]byte(objMatch), &mapFallback); errMap == nil {
+				for _, v := range mapFallback {
+					trivias = append(trivias, v)
+				}
+				if len(trivias) > 0 {
+					return trivias
+				}
+			}
+		}
+
 		log.Println("Groq JSON parse error:", err, "Content:", content)
 		return []MovieTrivia{}
 	}

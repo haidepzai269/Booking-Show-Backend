@@ -29,6 +29,33 @@ type ConcessionItemRequest struct {
 }
 
 func (s *OrderService) CreateOrder(req CreateOrderReq, userID int) (*model.Order, error) {
+	// ─── Idempotent Check: Tránh tạo đơn lặp khi refresh trang ────────────────
+	var existingOrder model.Order
+	if err := repository.DB.Preload("OrderSeats").
+		Where("user_id = ? AND showtime_id = ? AND status = 'PENDING'", userID, req.ShowtimeID).
+		Order("created_at DESC").
+		First(&existingOrder).Error; err == nil {
+
+		// So sánh danh sách ghế
+		if len(existingOrder.OrderSeats) == len(req.ShowtimeSeatIDs) {
+			match := true
+			existingSeatIDs := make(map[int]bool)
+			for _, os := range existingOrder.OrderSeats {
+				existingSeatIDs[os.ShowtimeSeatID] = true
+			}
+			for _, id := range req.ShowtimeSeatIDs {
+				if !existingSeatIDs[id] {
+					match = false
+					break
+				}
+			}
+			if match {
+				// Trả về đơn hàng cũ thay vì tạo mới
+				return &existingOrder, nil
+			}
+		}
+	}
+
 	tx := repository.DB.Begin()
 	defer func() {
 		if r := recover(); r != nil {

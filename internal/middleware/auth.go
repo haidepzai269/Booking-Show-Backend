@@ -46,6 +46,31 @@ func AuthMiddleware(cfg *config.Config) gin.HandlerFunc {
 	}
 }
 
+// SoftAuthMiddleware thử kiểm tra token JWT, nếu không có hoặc sai cũng không chặn request (dùng cho AI gợi ý)
+func SoftAuthMiddleware(cfg *config.Config) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		authHeader := c.GetHeader("Authorization")
+		var tokenString string
+		if authHeader != "" {
+			parts := strings.Split(authHeader, " ")
+			if len(parts) == 2 && parts[0] == "Bearer" {
+				tokenString = parts[1]
+			}
+		} else if qToken := c.Query("token"); qToken != "" {
+			tokenString = qToken
+		}
+
+		if tokenString != "" {
+			claims, err := bookingjwt.ValidateToken(tokenString, cfg.JWTSecret)
+			if err == nil {
+				c.Set("userID", claims.UserID)
+				c.Set("userRole", claims.Role)
+			}
+		}
+		c.Next()
+	}
+}
+
 // RequireRole chặn quyền truy cập dựa trên role
 func RequireRole(roles ...string) gin.HandlerFunc {
 	return func(c *gin.Context) {
