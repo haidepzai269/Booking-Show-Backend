@@ -101,9 +101,10 @@ func (h *FAQHandler) AskFAQ(c *gin.Context) {
 	userContext := "Người dùng chưa có lịch sử mua vé hoặc chưa đăng nhập."
 	if val, exists := c.Get("userID"); exists {
 		uid := val.(int)
+		// Lấy lịch sử đơn hàng của user để AI biết user đã mua gì
 		orderSvc := &service.OrderService{}
-		orders, err := orderSvc.MyOrders(uid)
-		if err == nil && len(orders) > 0 {
+		orders, _, err := orderSvc.MyOrders(uid, 1, 5) // Lấy 5 đơn gần nhất
+		if err == nil {
 			var histStr strings.Builder
 			histStr.WriteString("Lịch sử xem phim của người dùng: ")
 			seenMovies := make(map[string]bool)

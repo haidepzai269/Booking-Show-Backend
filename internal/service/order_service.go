@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -192,6 +193,16 @@ func (s *OrderService) CreateOrder(req CreateOrderReq, userID int) (*model.Order
 	if err := tx.Commit().Error; err != nil {
 		return nil, err
 	}
+
+	// Invalidate Cache (all pages)
+	if bookingredis.Client != nil {
+		ctx := context.Background()
+		iter := bookingredis.Client.Scan(ctx, 0, fmt.Sprintf("user:orders:%d:*", userID), 0).Iterator()
+		for iter.Next(ctx) {
+			bookingredis.Client.Del(ctx, iter.Val())
+		}
+	}
+
 	return &order, nil
 }
 
@@ -213,17 +224,58 @@ func (s *OrderService) GetOrder(orderIDStr string, userID int, isAdmin bool) (*m
 	return &order, nil
 }
 
-// MyOrders — danh sách đơn hàng của user
-func (s *OrderService) MyOrders(userID int) ([]model.Order, error) {
-	var orders []model.Order
-	if err := repository.DB.Preload("Showtime.Movie").Preload("Showtime.Room.Cinema").
-		Preload("Promotion").
-		Where("user_id = ?", userID).
-		Order("created_at DESC").
-		Find(&orders).Error; err != nil {
-		return nil, err
+// MyOrders — danh sách đơn hàng của user (có phân trang & Redis cache)
+func (s *OrderService) MyOrders(userID int, page, limit int) ([]model.Order, int64, error) {
+	if page < 1 {
+		page = 1
 	}
-	return orders, nil
+	if limit < 1 {
+		limit = 10
+	}
+	offset := (page - 1) * limit
+
+	cacheKey := fmt.Sprintf("user:orders:%d:p%d:l%d", userID, page, limit)
+	ctx := context.Background()
+
+	// Try Cache
+	if bookingredis.Client != nil {
+		cached, err := bookingredis.Client.Get(ctx, cacheKey).Result()
+		if err == nil {
+			var result struct {
+				Orders []model.Order `json:"orders"`
+				Total  int64         `json:"total"`
+			}
+			if err := json.Unmarshal([]byte(cached), &result); err == nil {
+				return result.Orders, result.Total, nil
+			}
+		}
+	}
+
+	var orders []model.Order
+	var total int64
+
+	query := repository.DB.Model(&model.Order{}).Where("user_id = ?", userID)
+	query.Count(&total)
+
+	if err := query.Preload("Showtime.Movie").Preload("Showtime.Room.Cinema").
+		Preload("Promotion").
+		Order("created_at DESC").
+		Offset(offset).Limit(limit).
+		Find(&orders).Error; err != nil {
+		return nil, 0, err
+	}
+
+	// Save Cache (10 mins)
+	if bookingredis.Client != nil {
+		result := struct {
+			Orders []model.Order `json:"orders"`
+			Total  int64         `json:"total"`
+		}{Orders: orders, Total: total}
+		data, _ := json.Marshal(result)
+		bookingredis.Client.Set(ctx, cacheKey, data, 10*time.Minute)
+	}
+
+	return orders, total, nil
 }
 
 // CancelOrder — hủy đơn hàng + release ghế (dùng order_seats) + hoàn voucher + cleanup Redis
@@ -291,6 +343,12 @@ func (s *OrderService) CancelOrder(orderIDStr string, userID int) error {
 
 	if err := tx.Commit().Error; err != nil {
 		return err
+	}
+
+	// Invalidate User Orders Cache
+	if bookingredis.Client != nil {
+		cacheKey := fmt.Sprintf("user:orders:%d", userID)
+		bookingredis.Client.Del(context.Background(), cacheKey)
 	}
 
 	// 5. Sau khi commit: cleanup Redis key và phát SSE cho từng ghế
@@ -383,7 +441,17 @@ func (s *OrderService) UpdateOrderConcessions(orderIDStr string, userID int, ite
 		return err
 	}
 
-	return tx.Commit().Error
+	if err := tx.Commit().Error; err != nil {
+		return err
+	}
+
+	// Invalidate Cache
+	if bookingredis.Client != nil {
+		cacheKey := fmt.Sprintf("user:orders:%d", userID)
+		bookingredis.Client.Del(context.Background(), cacheKey)
+	}
+
+	return nil
 }
 
 // ApplyOrderVoucher — áp dụng hoặc xóa voucher cho đơn PENDING
@@ -459,6 +527,12 @@ func (s *OrderService) ApplyOrderVoucher(orderIDStr string, userID int, code str
 
 	if err := tx.Commit().Error; err != nil {
 		return nil, err
+	}
+
+	// Invalidate Cache
+	if bookingredis.Client != nil {
+		cacheKey := fmt.Sprintf("user:orders:%d", userID)
+		bookingredis.Client.Del(context.Background(), cacheKey)
 	}
 
 	// Reload order với đầy đủ thông tin

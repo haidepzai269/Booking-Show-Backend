@@ -2,6 +2,7 @@ package handler
 
 import (
 	"net/http"
+	"strconv"
 
 	"github.com/booking-show/booking-show-api/internal/service"
 	"github.com/gin-gonic/gin"
@@ -58,14 +59,36 @@ func (h *OrderHandler) GetOrder(c *gin.Context) {
 
 func (h *OrderHandler) MyOrders(c *gin.Context) {
 	userID := c.GetInt("userID")
+	
+	page := 1
+	if p := c.Query("page"); p != "" {
+		if val, err := strconv.Atoi(p); err == nil {
+			page = val
+		}
+	}
+	
+	limit := 10
+	if l := c.Query("limit"); l != "" {
+		if val, err := strconv.Atoi(l); err == nil {
+			limit = val
+		}
+	}
 
-	orders, err := h.OrderService.MyOrders(userID)
+	orders, total, err := h.OrderService.MyOrders(userID, page, limit)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "Failed to fetch orders"})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"success": true, "data": orders})
+	c.JSON(http.StatusOK, gin.H{
+		"success": true, 
+		"data": orders,
+		"pagination": gin.H{
+			"page":  page,
+			"limit": limit,
+			"total": total,
+		},
+	})
 }
 
 func (h *OrderHandler) CancelOrder(c *gin.Context) {

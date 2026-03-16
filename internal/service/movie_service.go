@@ -55,11 +55,18 @@ func (s *MovieService) ListMovies() ([]model.Movie, error) {
 	return movies, nil
 }
 
+// HomeMovieDTO - Data Transfer Object cho phim trên trang chủ (có thêm trường Rating)
+type HomeMovieDTO struct {
+	model.Movie
+	Rating float64 `json:"rating"`
+}
+
 // HomeMoviesResponse - Cấu trúc response cho trang chủ
 type HomeMoviesResponse struct {
-	Featured    *model.Movie  `json:"featured"`
-	Hot         []model.Movie `json:"hot"`
-	BestSelling []model.Movie `json:"best_selling"`
+	Featured    *HomeMovieDTO  `json:"featured"`
+	Hot         []HomeMovieDTO `json:"hot"`
+	BestSelling []HomeMovieDTO `json:"best_selling"`
+	ComingSoon  []HomeMovieDTO `json:"coming_soon"`
 }
 
 // GetHomeMovies - Lấy dữ liệu phim cho trang chủ (featured, hot, best-selling)
@@ -106,10 +113,49 @@ func (s *MovieService) GetHomeMovies() (*HomeMoviesResponse, error) {
 		return nil, err
 	}
 
+	// Coming soon = release_date > today
+	var comingSoon []model.Movie
+	if err := repository.DB.Preload("Genres").Where("is_active = ? AND release_date > ?", true, time.Now()).
+		Order("release_date ASC").Limit(6).Find(&comingSoon).Error; err != nil {
+		log.Printf("Warning: Failed to fetch coming soon movies: %v", err)
+	}
+
+	// Convert sang DTO và lấy Rating
+	extraSvc := &MovieExtraService{}
+	getRating := func(m model.Movie) HomeMovieDTO {
+		extra, _ := extraSvc.GetExtraInfo(m.ID)
+		rating := 8.5 // fallback mặc định nếu TMDB/Cache xịt
+		if extra != nil && extra.Rating > 0 {
+			rating = extra.Rating
+		}
+		return HomeMovieDTO{
+			Movie:  m,
+			Rating: rating,
+		}
+	}
+
+	var hotDTOs []HomeMovieDTO
+	for _, m := range hot {
+		hotDTOs = append(hotDTOs, getRating(m))
+	}
+
+	var bestSellingDTOs []HomeMovieDTO
+	for _, m := range bestSelling {
+		bestSellingDTOs = append(bestSellingDTOs, getRating(m))
+	}
+
+	var comingSoonDTOs []HomeMovieDTO
+	for _, m := range comingSoon {
+		comingSoonDTOs = append(comingSoonDTOs, getRating(m))
+	}
+
+	featuredDTO := getRating(featured)
+
 	result := &HomeMoviesResponse{
-		Featured:    &featured,
-		Hot:         hot,
-		BestSelling: bestSelling,
+		Featured:    &featuredDTO,
+		Hot:         hotDTOs,
+		BestSelling: bestSellingDTOs,
+		ComingSoon:  comingSoonDTOs,
 	}
 
 	// 3. Lưu vào Redis (TTL 5 phút cho trang chủ)

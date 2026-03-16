@@ -3,6 +3,7 @@ package service
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"time"
 
@@ -233,6 +234,13 @@ func (s *TicketService) ProcessPaymentSuccess(orderIDStr, gateway, transactionID
 		log.Printf("❌ [ProcessPaymentSuccess] COMMIT FAILED: %v", err)
 		return err
 	}
+
+	// Invalidate User Orders Cache
+	if redispkg.Client != nil {
+		cacheKey := fmt.Sprintf("user:orders:%d", order.UserID)
+		redispkg.Client.Del(redispkg.Ctx, cacheKey)
+	}
+
 	log.Printf("🎉 [ProcessPaymentSuccess] SUCCESS — order=%s, %d tickets", orderIDStr, len(tickets))
 
 	// 🔔 Push real-time notification đến bản đồ ghế (Cập nhật trạng thái BOOKED)
