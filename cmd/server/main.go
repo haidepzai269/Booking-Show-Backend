@@ -10,6 +10,7 @@ import (
 	"github.com/booking-show/booking-show-api/internal/middleware"
 	"github.com/booking-show/booking-show-api/internal/repository"
 	"github.com/booking-show/booking-show-api/internal/service"
+	"github.com/booking-show/booking-show-api/internal/worker"
 	"github.com/booking-show/booking-show-api/pkg/cloudinary"
 	"github.com/booking-show/booking-show-api/pkg/rabbitmq"
 	"github.com/booking-show/booking-show-api/pkg/redis"
@@ -35,6 +36,9 @@ func main() {
 
 	emailSvc := service.NewEmailService(cfg)
 	rabbitmq.StartEmailWorker(emailSvc.SendMagicLink)
+
+	// Khởi động worker newsletter
+	worker.StartNewsletterWorker()
 
 	// Khởi động cronjob 1 phút check 1 lần đễ dọn dẹp các khoản thanh toán quá 10p
 	cron.StartOrderCleanupCronjob()

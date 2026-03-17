@@ -29,6 +29,7 @@ func MigrateDB() {
 		&model.FAQLog{},
 		&model.Campaign{},
 		&model.ChatHistory{},
+		&model.NewsletterSubscription{},
 	)
 
 	if err != nil {

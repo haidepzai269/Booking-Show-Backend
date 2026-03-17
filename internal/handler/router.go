@@ -129,6 +129,7 @@ func SetupRouter(r *gin.Engine, cfg *config.Config) {
 
 		// Promotions (validate voucher — cần auth để tránh abuse)
 		protected.POST("/promotions/validate", promotionHandler.Validate)
+		protected.POST("/promotions/subscribe", promotionHandler.SubscribeNewsletter)
 
 		// Orders
 		protected.POST("/orders", orderHandler.CreateOrder)
