@@ -26,7 +26,9 @@ type User struct {
 	Username        string    `json:"username" gorm:"type:varchar(50);unique"`
 	Email           string    `json:"email" gorm:"type:varchar(255);unique;not null"`
 	Phone           string    `json:"phone" gorm:"type:varchar(20);default:''"`
-	PasswordHash    string    `json:"-" gorm:"type:varchar(255);not null"`
+	PasswordHash    string    `json:"-" gorm:"type:varchar(255)"` // Không bắt buộc khi dùng OAuth
+	Provider        string    `json:"provider" gorm:"type:varchar(20);default:'local'"`
+	ProviderID      string    `json:"provider_id" gorm:"type:varchar(255)"`
 	Role            UserRole  `json:"role" gorm:"type:varchar(20);default:'CUSTOMER'"`
 	Rank            UserRank  `json:"rank" gorm:"type:varchar(20);default:'BRONZE'"`
 	TotalSpending   float64   `json:"total_spending" gorm:"type:decimal(15,2);default:0"`

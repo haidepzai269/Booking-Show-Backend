@@ -37,6 +37,13 @@ type Config struct {
 	// AI
 	GroqAPIKey       string
 	HuggingFaceToken string
+	// OAuth
+	GoogleClientID     string
+	GoogleClientSecret string
+	GoogleRedirectURL  string
+	FacebookClientID     string
+	FacebookClientSecret string
+	FacebookRedirectURL  string
 }
 
 // LoadEnv loads environment variables from .env file
@@ -91,6 +98,13 @@ func LoadEnv() *Config {
 		// AI
 		GroqAPIKey:       getEnv("GROQ_API_KEY", ""),
 		HuggingFaceToken: getEnv("HUGGINGFACE_TOKEN", ""),
+		// OAuth
+		GoogleClientID:     getEnv("GOOGLE_CLIENT_ID", ""),
+		GoogleClientSecret: getEnv("GOOGLE_CLIENT_SECRET", ""),
+		GoogleRedirectURL:  getEnv("GOOGLE_REDIRECT_URL", ""),
+		FacebookClientID:     getEnv("FACEBOOK_CLIENT_ID", ""),
+		FacebookClientSecret: getEnv("FACEBOOK_CLIENT_SECRET", ""),
+		FacebookRedirectURL:  getEnv("FACEBOOK_REDIRECT_URL", ""),
 	}
 }
 

@@ -3,11 +3,13 @@ package handler
 import (
 	"github.com/booking-show/booking-show-api/config"
 	"github.com/booking-show/booking-show-api/internal/middleware"
+	"github.com/booking-show/booking-show-api/pkg/oauth"
 	"github.com/gin-gonic/gin"
 )
 
 func SetupRouter(r *gin.Engine, cfg *config.Config) {
 	v1 := r.Group("/api/v1")
+	oauth.InitOAuth(cfg)
 
 	// ─── Handlers ────────────────────────────────────────────────────────────
 	authHandler := NewAuthHandler(cfg)
@@ -40,6 +42,12 @@ func SetupRouter(r *gin.Engine, cfg *config.Config) {
 		auth.POST("/magic-link/verify", authHandler.VerifyMagicLink)
 		auth.POST("/reset-password", authHandler.ResetPassword)
 		auth.GET("/check-availability", authHandler.CheckAvailability)
+
+		// OAuth routes
+		auth.GET("/google", authHandler.GoogleLogin)
+		auth.GET("/google/callback", authHandler.GoogleCallback)
+		auth.GET("/facebook", authHandler.FacebookLogin)
+		auth.GET("/facebook/callback", authHandler.FacebookCallback)
 	}
 
 	// ─── Public: Movies ──────────────────────────────────────────────────────
@@ -130,6 +138,7 @@ func SetupRouter(r *gin.Engine, cfg *config.Config) {
 		// Promotions (validate voucher — cần auth để tránh abuse)
 		protected.POST("/promotions/validate", promotionHandler.Validate)
 		protected.POST("/promotions/subscribe", promotionHandler.SubscribeNewsletter)
+		protected.GET("/promotions/subscription-status", promotionHandler.GetSubscriptionStatus)
 
 		// Orders
 		protected.POST("/orders", orderHandler.CreateOrder)

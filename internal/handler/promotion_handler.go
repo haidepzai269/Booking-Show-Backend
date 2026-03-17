@@ -92,6 +92,31 @@ func (h *PromotionHandler) SubscribeNewsletter(c *gin.Context) {
 	})
 }
 
+// GetSubscriptionStatus — GET /api/v1/promotions/subscription-status
+func (h *PromotionHandler) GetSubscriptionStatus(c *gin.Context) {
+	userIDVal, exists := c.Get("userID")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Bạn cần đăng nhập để thực hiện hành động này"})
+		return
+	}
+	userID := userIDVal.(int)
+
+	var sub model.NewsletterSubscription
+	err := repository.DB.Where("user_id = ?", userID).First(&sub).Error
+
+	if err == nil {
+		c.JSON(http.StatusOK, gin.H{
+			"subscribed": true,
+			"email":      sub.Email,
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"subscribed": false,
+	})
+}
+
 // Validate — POST /api/v1/promotions/validate
 func (h *PromotionHandler) Validate(c *gin.Context) {
 	var req service.ValidatePromotionReq

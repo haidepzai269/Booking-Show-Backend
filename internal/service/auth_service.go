@@ -202,6 +202,56 @@ func (s *AuthService) VerifyMagicLink(token string) (*TokenResponse, *model.User
 	}, &user, nil
 }
 
+func (s *AuthService) OAuthLoginUser(email, fullName, provider, providerID string) (*TokenResponse, *model.User, error) {
+	var user model.User
+	
+	// Tìm user theo email hoặc provider id
+	err := repository.DB.Where("email = ? OR (provider = ? AND provider_id = ?)", email, provider, providerID).First(&user).Error
+	
+	if err != nil {
+		// Nếu không tìm thấy, tạo user mới
+		user = model.User{
+			Email:      email,
+			FullName:   fullName,
+			Username:   fullName,
+			Provider:   provider,
+			ProviderID: providerID,
+			Role:       model.RoleCustomer,
+			IsActive:   true,
+		}
+		
+		if err := repository.DB.Create(&user).Error; err != nil {
+			return nil, nil, fmt.Errorf("không thể tạo người dùng mới: %v", err)
+		}
+
+		// Cập nhật Cache Redis
+		if redis.Client != nil {
+			ctx := context.Background()
+			redis.Client.Set(ctx, fmt.Sprintf("exists:email:%s", user.Email), "1", 0)
+			redis.Client.Set(ctx, fmt.Sprintf("exists:username:%s", user.Username), "1", 0)
+		}
+	} else {
+		// Nếu đã tìm thấy, cập nhật ProviderID nếu trước đó chưa có (trường hợp user reg bằng email trước đó)
+		if user.ProviderID == "" {
+			repository.DB.Model(&user).Updates(model.User{Provider: provider, ProviderID: providerID})
+		}
+	}
+
+	// Tạo Token
+	accessExp, _ := time.ParseDuration(s.Cfg.JWTAccessExpiration)
+	refreshExp, _ := time.ParseDuration("168h")
+
+	access, refresh, err := jwt.GenerateTokens(user.ID, string(user.Role), s.Cfg.JWTSecret, accessExp, refreshExp)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return &TokenResponse{
+		AccessToken:  access,
+		RefreshToken: refresh,
+	}, &user, nil
+}
+
 func (s *AuthService) ResetPassword(token, newPassword string) error {
 	key := fmt.Sprintf("magic_link:%s", token)
 	email, err := redis.Client.Get(context.Background(), key).Result()

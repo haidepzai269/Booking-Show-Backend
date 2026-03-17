@@ -5,7 +5,12 @@ import (
 
 	"github.com/booking-show/booking-show-api/config"
 	"github.com/booking-show/booking-show-api/internal/service"
+	"github.com/booking-show/booking-show-api/pkg/oauth"
 	"github.com/gin-gonic/gin"
+	"io/ioutil"
+	"encoding/json"
+	"fmt"
+	"context"
 )
 
 type AuthHandler struct {
@@ -168,4 +173,89 @@ func (h *AuthHandler) ResetPassword(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"success": true, "message": "Mật khẩu của bạn đã được cập nhật thành công."})
+}
+
+// ─── OAuth Google ────────────────────────────────────────────────────────
+
+func (h *AuthHandler) GoogleLogin(c *gin.Context) {
+	url := oauth.GoogleOauthConfig.AuthCodeURL("state")
+	c.Redirect(http.StatusTemporaryRedirect, url)
+}
+
+func (h *AuthHandler) GoogleCallback(c *gin.Context) {
+	code := c.Query("code")
+	token, err := oauth.GoogleOauthConfig.Exchange(context.Background(), code)
+	if err != nil {
+		c.Redirect(http.StatusTemporaryRedirect, h.AuthService.Cfg.FrontendURL+"/login?error=google_auth_failed")
+		return
+	}
+
+	resp, err := http.Get("https://www.googleapis.com/oauth2/v2/userinfo?access_token=" + token.AccessToken)
+	if err != nil {
+		c.Redirect(http.StatusTemporaryRedirect, h.AuthService.Cfg.FrontendURL+"/login?error=google_fetch_failed")
+		return
+	}
+	defer resp.Body.Close()
+
+	data, _ := ioutil.ReadAll(resp.Body)
+	var userInfo struct {
+		Email string `json:"email"`
+		Name  string `json:"name"`
+		ID    string `json:"id"`
+	}
+	json.Unmarshal(data, &userInfo)
+
+	tokens, _, err := h.AuthService.OAuthLoginUser(userInfo.Email, userInfo.Name, "google", userInfo.ID)
+	if err != nil {
+		c.Redirect(http.StatusTemporaryRedirect, h.AuthService.Cfg.FrontendURL+"/login?error=auth_internal_error")
+		return
+	}
+
+	c.SetCookie("refresh_token", tokens.RefreshToken, 7*24*3600, "/", "", false, true)
+	c.Redirect(http.StatusTemporaryRedirect, fmt.Sprintf("%s/login?token=%s", h.AuthService.Cfg.FrontendURL, tokens.AccessToken))
+}
+
+// ─── OAuth Facebook ──────────────────────────────────────────────────────
+
+func (h *AuthHandler) FacebookLogin(c *gin.Context) {
+	url := oauth.FacebookOauthConfig.AuthCodeURL("state")
+	c.Redirect(http.StatusTemporaryRedirect, url)
+}
+
+func (h *AuthHandler) FacebookCallback(c *gin.Context) {
+	code := c.Query("code")
+	token, err := oauth.FacebookOauthConfig.Exchange(context.Background(), code)
+	if err != nil {
+		c.Redirect(http.StatusTemporaryRedirect, h.AuthService.Cfg.FrontendURL+"/login?error=facebook_auth_failed")
+		return
+	}
+
+	resp, err := http.Get("https://graph.facebook.com/me?fields=id,name,email&access_token=" + token.AccessToken)
+	if err != nil {
+		c.Redirect(http.StatusTemporaryRedirect, h.AuthService.Cfg.FrontendURL+"/login?error=facebook_fetch_failed")
+		return
+	}
+	defer resp.Body.Close()
+
+	data, _ := ioutil.ReadAll(resp.Body)
+	var userInfo struct {
+		Email string `json:"email"`
+		Name  string `json:"name"`
+		ID    string `json:"id"`
+	}
+	json.Unmarshal(data, &userInfo)
+
+	// Trường hợp FB không trả về email (hiếm nhưng có thể xảy ra nếu user không cấp quyền)
+	if userInfo.Email == "" {
+		userInfo.Email = fmt.Sprintf("%s@facebook.com", userInfo.ID)
+	}
+
+	tokens, _, err := h.AuthService.OAuthLoginUser(userInfo.Email, userInfo.Name, "facebook", userInfo.ID)
+	if err != nil {
+		c.Redirect(http.StatusTemporaryRedirect, h.AuthService.Cfg.FrontendURL+"/login?error=auth_internal_error")
+		return
+	}
+
+	c.SetCookie("refresh_token", tokens.RefreshToken, 7*24*3600, "/", "", false, true)
+	c.Redirect(http.StatusTemporaryRedirect, fmt.Sprintf("%s/login?token=%s", h.AuthService.Cfg.FrontendURL, tokens.AccessToken))
 }
