@@ -1,0 +1,24 @@
+services:
+  # Booking Show API (Backend)
+  - type: web
+    name: booking-show-api
+    runtime: docker
+    dockerfilePath: ./booking-show-api/Dockerfile
+    plan: free
+    region: singapore
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: REDIS_URL
+        sync: false
+      - key: JWT_SECRET
+        sync: false
+      - key: NODE_ENV
+        value: production
+    healthCheckPath: /health
+
+# Nếu bạn muốn deploy database riêng trên Render, hãy bỏ comment phần dưới
+# databases:
+#   - name: booking-show-db
+#     region: singapore
+#     plan: free
