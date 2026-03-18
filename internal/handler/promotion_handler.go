@@ -106,14 +106,20 @@ func (h *PromotionHandler) GetSubscriptionStatus(c *gin.Context) {
 
 	if err == nil {
 		c.JSON(http.StatusOK, gin.H{
-			"subscribed": true,
-			"email":      sub.Email,
+			"success": true,
+			"data": gin.H{
+				"subscribed": true,
+				"email":      sub.Email,
+			},
 		})
 		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"subscribed": false,
+		"success": true,
+		"data": gin.H{
+			"subscribed": false,
+		},
 	})
 }
 
