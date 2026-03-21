@@ -2,6 +2,8 @@ package service
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,6 +12,9 @@ import (
 	"os"
 	"regexp"
 	"time"
+
+	"github.com/booking-show/booking-show-api/internal/model"
+	"github.com/booking-show/booking-show-api/pkg/redis"
 )
 
 type AIService struct {
@@ -290,4 +295,152 @@ QUY TẮC PHẢN HỒI:
 	}
 
 	return "Tôi đã tìm kiếm nhưng hiện tại không thể lấy đủ thông tin. Vui lòng hỏi lại hoặc liên hệ hotline 1900-1234 để được hỗ trợ nhanh nhất.", nil
+}
+
+// SeatLayoutReq dùng để gửi dữ liệu tối giản cho AI
+type SeatLayoutID struct {
+	ID         int    `json:"id"`
+	RowChar    string `json:"row"`
+	SeatNumber int    `json:"num"`
+}
+
+// DesignSeatLayout nhận yêu cầu của admin và danh sách ghế hiện tại, trả về danh sách ghế đã được gán tọa độ X, Y, Angle
+func (s *AIService) DesignSeatLayout(prompt string, currentSeats []model.Seat) ([]model.Seat, error) {
+	if s.groqAPIKey == "" {
+		return nil, fmt.Errorf("GROQ_API_KEY is not configured")
+	}
+
+	// 1. Kiểm tra Redis Cache
+	// Hash dựa trên prompt + số lượng ghế để đảm bảo tính duy nhất
+	h := sha256.New()
+	h.Write([]byte(fmt.Sprintf("%s:%d:v2", prompt, len(currentSeats))))
+	promptHash := hex.EncodeToString(h.Sum(nil))
+	redisKey := "seat_layout:ai:v2:" + promptHash
+
+	if redis.Client != nil {
+		cached, err := redis.Client.Get(redis.Ctx, redisKey).Result()
+		if err == nil {
+			var result []model.Seat
+			if err := json.Unmarshal([]byte(cached), &result); err == nil {
+				log.Printf("[AI Designer V2] Redis Cache Hit for: %s\n", prompt)
+				return result, nil
+			}
+		}
+	}
+
+	// 2. Chuẩn bị dữ liệu gửi cho AI (tối giản để tiết kiệm token)
+	tinySeats := make([]SeatLayoutID, len(currentSeats))
+	for i, seat := range currentSeats {
+		tinySeats[i] = SeatLayoutID{
+			ID:         seat.ID,
+			RowChar:    seat.RowChar,
+			SeatNumber: seat.SeatNumber,
+		}
+	}
+	seatsJSON, _ := json.Marshal(tinySeats)
+
+	systemPrompt := `Bạn là Kiến trúc sư Rạp chiếu phim AI (Cinema Architect) cấp cao.
+Nhiệm vụ của bạn là sắp xếp tọa độ (x, y) và góc xoay (angle) cho các ghế trong phòng chiếu dựa trên yêu cầu của Admin.
+
+QUY TẮC KỸ THUẬT:
+- KHÔNG GIAN: ViewBox rạp là 1000x800. Tâm rạp (500, 400). Màn hình ở phía trên (y=0).
+- TỌA ĐỘ: x [0-1000], y [0-800].
+- KHOẢNG CÁCH GHẾ: Khoảng cách tiêu chuẩn giữa 2 ghế cạnh nhau là 50 đơn vị. Khoảng cách giữa 2 hàng là 60 đơn vị.
+- LỐI ĐI (AISLE): Nếu yêu cầu "chia bên", "chia cụm", "có lối đi ở giữa", hãy tạo một khoảng trống lớn (ít nhất 150 đơn vị) ở giữa các cụm ghế bằng cách điều chỉnh tọa độ X.
+- CĂN CHỈNH: Luôn cố gắng căn giữa toàn bộ khối ghế theo trục X=500 để sơ đồ cân đối.
+
+VÍ DỤ BỐ CỤC:
+1. "Chia 2 bên": Chia danh sách ghế thành 2 nửa (theo SeatNumber). Nửa trái có x < 425, nửa phải có x > 575.
+2. "Hình chữ nhật": Xếp các ghế cùng RowChar trên cùng một đường thẳng Y, giãn cách X đều nhau.
+3. "Hình thoi/Vòm": Điều chỉnh Y tăng/giảm dần theo vị trí ghế trong hàng để tạo độ cong/vát.
+
+KẾT QUẢ: Chỉ trả về JSON mảng: [{"id": int, "x": float, "y": float, "angle": float}]. KHÔNG GIẢI THÍCH.
+
+DỮ LIỆU GHẾ HIỆN CÓ:
+` + string(seatsJSON)
+
+	userPrompt := "Yêu cầu thiết kế: " + prompt
+
+	reqBody := GroqRequest{
+		Model: "llama-3.3-70b-versatile",
+		Messages: []Message{
+			{Role: "system", Content: systemPrompt},
+			{Role: "user", Content: userPrompt},
+		},
+		Temperature: 0.1, // Giảm xuống 0.1 để cực kỳ chính xác hình học
+	}
+
+	jsonData, _ := json.Marshal(reqBody)
+	req, err := http.NewRequest("POST", "https://api.groq.com/openai/v1/chat/completions", bytes.NewBuffer(jsonData))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+s.groqAPIKey)
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("groq api error %d", resp.StatusCode)
+	}
+
+	var groqRes GroqResponse
+	json.NewDecoder(resp.Body).Decode(&groqRes)
+
+	if len(groqRes.Choices) == 0 {
+		return nil, fmt.Errorf("AI không trả về kết quả")
+	}
+
+	content := groqRes.Choices[0].Message.Content
+	
+	// Trích xuất JSON mảng từ content (phòng trường hợp AI trả về text dư thừa)
+	re := regexp.MustCompile(`\[\s*\{.*\}\s*\]`)
+	match := re.FindString(content)
+	if match == "" {
+		// Thử tìm [ ... ] đơn giản nhất
+		reSimple := regexp.MustCompile(`\[[\s\S]*\]`)
+		match = reSimple.FindString(content)
+	}
+
+	if match == "" {
+		return nil, fmt.Errorf("không tìm thấy JSON hợp lệ trong phản hồi của AI: %s", content)
+	}
+
+	var aiResults []struct {
+		ID    int     `json:"id"`
+		X     float64 `json:"x"`
+		Y     float64 `json:"y"`
+		Angle float64 `json:"angle"`
+	}
+	if err := json.Unmarshal([]byte(match), &aiResults); err != nil {
+		return nil, fmt.Errorf("lỗi parse JSON AI: %v", err)
+	}
+
+	// 3. Map kết quả AI trở lại danh sách ghế gốc
+	resultSeats := make([]model.Seat, len(currentSeats))
+	copy(resultSeats, currentSeats)
+
+	for i := range resultSeats {
+		for _, ai := range aiResults {
+			if resultSeats[i].ID == ai.ID {
+				resultSeats[i].X = ai.X
+				resultSeats[i].Y = ai.Y
+				resultSeats[i].Angle = ai.Angle
+				break
+			}
+		}
+	}
+
+	// 4. Lưu vào Redis Cache (TTL 24h)
+	if redis.Client != nil {
+		jsonData, _ := json.Marshal(resultSeats)
+		redis.Client.Set(redis.Ctx, redisKey, string(jsonData), 24*time.Hour)
+	}
+
+	return resultSeats, nil
 }

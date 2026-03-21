@@ -9,6 +9,7 @@ import (
 
 	"github.com/booking-show/booking-show-api/internal/service"
 	redispkg "github.com/booking-show/booking-show-api/pkg/redis"
+	"github.com/booking-show/booking-show-api/pkg/sse"
 	"github.com/gin-gonic/gin"
 )
 
@@ -348,4 +349,55 @@ func (h *AdminHandler) DeleteRoom(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"success": true, "message": "Room deleted successfully"})
+}
+
+func (h *AdminHandler) UpdateRoom(c *gin.Context) {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "invalid room ID"})
+		return
+	}
+
+	var req service.UpdateRoomReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": err.Error()})
+		return
+	}
+
+	cinemaSvc := &service.CinemaService{}
+	room, err := cinemaSvc.UpdateRoom(id, req)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+		return
+	}
+
+	// Real-time Update via SSE
+	sse.BroadcastRoomUpdated(room.ID, room.CinemaID, room.Name, room.Capacity)
+
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": room})
+}
+
+func (h *AdminHandler) GenerateAILayout(c *gin.Context) {
+	roomID, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "invalid room ID"})
+		return
+	}
+
+	var req struct {
+		Prompt string `json:"prompt" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": err.Error()})
+		return
+	}
+
+	cinemaSvc := &service.CinemaService{}
+	seats, err := cinemaSvc.GenerateAILayout(roomID, req.Prompt)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": seats})
 }

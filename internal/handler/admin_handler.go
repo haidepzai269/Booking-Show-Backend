@@ -130,13 +130,14 @@ func (h *AdminHandler) GetDashboardStats(c *gin.Context) {
 	}
 	var rows []tempRow
 	repository.DB.Table("orders").
-		Select("DATE(created_at) as day, SUM(CASE WHEN status = ? THEN final_amount ELSE 0 END) as revenue, COUNT(*) as count", model.OrderCompleted).
+		Select("TO_CHAR(created_at, 'YYYY-MM-DD') as day, SUM(CASE WHEN status = ? THEN final_amount ELSE 0 END) as revenue, COUNT(*) as count", model.OrderCompleted).
 		Where("created_at >= ?", startOfSevenDaysAgo).
-		Group("DATE(created_at)").
+		Group("day").
 		Order("day ASC").
 		Scan(&rows)
 
 	// Map ngược lại để đảm bảo đủ 7 ngày (kể cả những ngày không có đơn)
+	log.Printf("[Dashboard] Found %d days with data in last 7 days. Total Revenue: %d", len(rows), totalRevenue)
 	rowMap := make(map[string]tempRow)
 	for _, r := range rows {
 		rowMap[r.Day] = r

@@ -281,6 +281,7 @@ func (s *CinemaService) DeleteCinema(id int) error {
 type RoomReq struct {
 	Name     string `json:"name" binding:"required"`
 	Capacity int    `json:"capacity" binding:"required,gt=0"`
+	Layout   string `json:"layout"` // "square", "ladder", "arch"
 }
 
 func (s *CinemaService) CreateRoom(cinemaID int, req RoomReq) (*model.Room, error) {
@@ -302,30 +303,115 @@ func (s *CinemaService) CreateRoom(cinemaID int, req RoomReq) (*model.Room, erro
 		return nil, err
 	}
 
-	// Tự động sinh ghế STANDARD (mỗi hàng tối đa 16 ghế)
-	cols := 16
-	rows := (req.Capacity + cols - 1) / cols
-	if rows > 26 {
-		rows = 26 // Hỗ trợ tối đa từ A đến Z
-	}
-
+	// Tự động sinh ghế STANDARD dựa trên layout
 	var seats []model.Seat
 	seatCount := 0
 
-	for r := 0; r < rows; r++ {
-		rowChar := string(rune('A' + r))
-		for c := 1; c <= cols; c++ {
-			if seatCount >= req.Capacity {
-				break
+	// Các thông số mặc định cho vị trí
+	startX, startY := 150.0, 150.0
+	spacingX, spacingY := 50.0, 50.0
+
+	switch req.Layout {
+	case "ladder":
+		// Layout hình thang: Hàng đầu ít ghế hơn hàng cuối
+		const maxCols = 20
+		const minCols = 10
+		
+		// Ước tính số hàng cần thiết
+		avgCols := (maxCols + minCols) / 2.0
+		approxRows := int(math.Ceil(float64(req.Capacity) / avgCols))
+		
+		for r := 0; r < approxRows; r++ {
+			rowChar := string(rune('A' + r))
+			// Tính số ghế cho hàng này (tăng dần)
+			rowCols := minCols + int(math.Floor(float64(r)*(float64(maxCols-minCols)/float64(approxRows-1))))
+			if approxRows == 1 {
+				rowCols = req.Capacity
 			}
-			seats = append(seats, model.Seat{
-				RoomID:     room.ID,
-				RowChar:    rowChar,
-				SeatNumber: c,
-				Type:       model.SeatStandard,
-				IsActive:   true,
-			})
-			seatCount++
+			
+			for c := 1; c <= rowCols; c++ {
+				if seatCount >= req.Capacity {
+					break
+				}
+				// Căn giữa hàng
+				rowOffsetX := (float64(maxCols) - float64(rowCols)) * spacingX / 2.0
+				
+				seats = append(seats, model.Seat{
+					RoomID:     room.ID,
+					RowChar:    rowChar,
+					SeatNumber: c,
+					Type:       model.SeatStandard,
+					X:          startX + rowOffsetX + float64(c-1)*spacingX,
+					Y:          startY + float64(r)*spacingY,
+					IsActive:   true,
+				})
+				seatCount++
+			}
+		}
+
+	case "arch":
+		// Layout hình vòm (Arc)
+		const colsPerRow = 16
+		rows := (req.Capacity + colsPerRow - 1) / colsPerRow
+		
+		centerX, centerY := 500.0, -100.0 // Tâm của cung tròn (phía trên màn hình)
+		baseRadius := 300.0
+		
+		for r := 0; r < rows; r++ {
+			rowChar := string(rune('A' + r))
+			radius := baseRadius + float64(r)*spacingY
+			
+			// Tính góc cho hàng này
+			rowSpan := math.Pi / 3.0 // 60 độ
+			startAngle := (math.Pi - rowSpan) / 2.0
+			angleStep := rowSpan / float64(colsPerRow-1)
+			
+			for c := 1; c <= colsPerRow; c++ {
+				if seatCount >= req.Capacity {
+					break
+				}
+				angle := startAngle + float64(c-1)*angleStep
+				
+				posX := centerX + radius*math.Cos(angle)
+				posY := centerY + radius*math.Sin(angle)
+				
+				// Góc xoay của ghế hướng về phía màn hình (tâm vòm)
+				seatAngle := (angle - math.Pi/2.0) * 180.0 / math.Pi
+				
+				seats = append(seats, model.Seat{
+					RoomID:     room.ID,
+					RowChar:    rowChar,
+					SeatNumber: c,
+					Type:       model.SeatStandard,
+					X:          posX,
+					Y:          posY,
+					Angle:      seatAngle,
+					IsActive:   true,
+				})
+				seatCount++
+			}
+		}
+
+	default: // "square" hoặc mặc định
+		cols := 16
+		rows := (req.Capacity + cols - 1) / cols
+		for r := 0; r < rows; r++ {
+			rowChar := string(rune('A' + r))
+			for c := 1; c <= cols; c++ {
+				if seatCount >= req.Capacity {
+					break
+				}
+				seats = append(seats, model.Seat{
+					RoomID:     room.ID,
+					RowChar:    rowChar,
+					SeatNumber: c,
+					Type:       model.SeatStandard,
+					X:          startX + float64(c-1)*spacingX,
+					Y:          startY + float64(r)*spacingY,
+					IsActive:   true,
+				})
+				seatCount++
+			}
 		}
 	}
 
@@ -364,6 +450,36 @@ func (s *CinemaService) DeleteRoom(id int) error {
 	}
 
 	return nil
+}
+
+type UpdateRoomReq struct {
+	Name     string `json:"name"`
+	Capacity int    `json:"capacity"`
+}
+
+func (s *CinemaService) UpdateRoom(id int, req UpdateRoomReq) (*model.Room, error) {
+	var room model.Room
+	if err := repository.DB.First(&room, id).Error; err != nil {
+		return nil, errors.New("room not found")
+	}
+
+	if req.Name != "" {
+		room.Name = req.Name
+	}
+	if req.Capacity > 0 {
+		room.Capacity = req.Capacity
+	}
+
+	if err := repository.DB.Save(&room).Error; err != nil {
+		return nil, err
+	}
+
+	if redispkg.Client != nil {
+		roomKey := fmt.Sprintf("cinema:%d:rooms", room.CinemaID)
+		redispkg.Client.Del(redispkg.Ctx, roomKey)
+	}
+
+	return &room, nil
 }
 
 // CinemaShowtimeItem — dung de tra ve API cinema movies
@@ -497,4 +613,20 @@ func (s *CinemaService) GetCinemaRooms(cinemaID int) ([]model.Room, error) {
 		}
 	}
 	return rooms, nil
+}
+
+// GenerateAILayout - Gọi AIService để thiết kế sơ đồ ghế bằng AI (có cache Redis)
+func (s *CinemaService) GenerateAILayout(roomID int, prompt string) ([]model.Seat, error) {
+	var seats []model.Seat
+	if err := repository.DB.Where("room_id = ? AND is_active = ?", roomID, true).Find(&seats).Error; err != nil {
+		return nil, err
+	}
+
+	if len(seats) == 0 {
+		return nil, errors.New("room has no seats to arrange")
+	}
+
+	// Khởi tạo AIService (nó sẽ tự đọc API Key từ Env)
+	aiSvc := NewAIService("", "")
+	return aiSvc.DesignSeatLayout(prompt, seats)
 }

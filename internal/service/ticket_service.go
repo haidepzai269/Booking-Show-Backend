@@ -248,32 +248,51 @@ func (s *TicketService) ProcessPaymentSuccess(orderIDStr, gateway, transactionID
 		sse.BroadcastSeatUpdate(order.ShowtimeID, seat.ID, "BOOKED")
 	}
 
-	// 🔔 Push real-time notification đến Admin panel
+	// 🔔 BẮT ĐẦU QUY TRÌNH THÔNG BÁO REAL-TIME
+	log.Printf("🔔 [AdminHub] Starting notification process for Order %s", orderIDStr)
+	
+	// Fetch info CẦN THIẾT cho broadcast trước khi vào goroutine để tránh tranh chấp dữ liệu
+	log.Printf("🔍 [AdminHub] Fetching user/showtime info for broadcast...")
+	var user model.User
+	var showtime model.Showtime
+	repository.DB.First(&user, order.UserID)
+	repository.DB.Preload("Movie").First(&showtime, order.ShowtimeID)
+	
+	movieTitle := ""
+	if showtime.Movie.ID != 0 {
+		movieTitle = showtime.Movie.Title
+	}
+
+	// 🔔 1. Broadcast NGAY LẬP TỨC (Dùng goroutine để không block worker nhưng đặt lên đầu)
 	go func() {
-		// Active Invalidation for Admin Dashboard and Order Lists
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("🚨 [AdminBroadcast] Panic in broadcast: %v", r)
+			}
+		}()
+		log.Printf("📢 [AdminBroadcast] Sending notification to SSE: %s - %s", user.FullName, movieTitle)
+		sse.BroadcastOrderCompleted(orderIDStr, user.FullName, movieTitle, order.FinalAmount, len(tickets))
+		log.Printf("✅ [AdminBroadcast] Notification sent for order %s", orderIDStr)
+	}()
+
+	// 🔔 2. Xóa Cache (Thực hiện sau để không làm chậm thông báo)
+	go func() {
 		if redispkg.Client != nil {
+			log.Printf("🧹 [Cache] Invalidating dashboard stats...")
+			redispkg.Client.Del(redispkg.Ctx, "admin:dashboard:stats")
+			
+			// Xóa list orders (Quét scan có thể chậm nên để sau)
+			log.Printf("🧹 [Cache] Scanning for order list keys to clear...")
 			iter := redispkg.Client.Scan(redispkg.Ctx, 0, "admin:orders:list:*", 0).Iterator()
 			var keysToDelete []string
 			for iter.Next(redispkg.Ctx) {
 				keysToDelete = append(keysToDelete, iter.Val())
 			}
-			keysToDelete = append(keysToDelete, "admin:dashboard:stats")
-
 			if len(keysToDelete) > 0 {
 				redispkg.Client.Del(redispkg.Ctx, keysToDelete...)
-				log.Printf("🧹 [Cache INVALIDATED] Dashboard & Orders Cache Cleared Due To Payment Success")
+				log.Printf("🧹 [Cache] Cleared %d order list keys", len(keysToDelete))
 			}
 		}
-
-		var user model.User
-		var showtime model.Showtime
-		repository.DB.First(&user, order.UserID)
-		repository.DB.Preload("Movie").First(&showtime, order.ShowtimeID)
-		movieTitle := ""
-		if showtime.Movie.ID != 0 {
-			movieTitle = showtime.Movie.Title
-		}
-		sse.BroadcastOrderCompleted(orderIDStr, user.FullName, movieTitle, order.FinalAmount, len(tickets))
 	}()
 
 	return nil

@@ -28,6 +28,7 @@ func main() {
 	repository.MigrateDB()
 	redis.ConnectRedis(cfg)
 	go sse.StartSubscriber()
+	go sse.StartAdminSubscriber()
 	rabbitmq.ConnectRabbitMQ(cfg)
 	defer rabbitmq.CloseRabbitMQ()
 	// Khởi động worker ngầm lắng nghe log và email

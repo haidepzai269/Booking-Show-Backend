@@ -2,6 +2,7 @@ package handler
 
 import (
 	"io"
+	"log"
 
 	"github.com/booking-show/booking-show-api/pkg/sse"
 	"github.com/gin-gonic/gin"
@@ -17,10 +18,20 @@ func NewAdminSSEHandler() *AdminSSEHandler {
 // Admin client kết nối SSE để nhận thông báo real-time
 func (h *AdminSSEHandler) Stream(c *gin.Context) {
 	hub := sse.GetAdminHub()
+	userID, _ := c.Get("userID")
+	
+	// Convert interface to int safely
+	uid := 0
+	if val, ok := userID.(int); ok {
+		uid = val
+	}
+
 	client := &sse.Client{
-		Channel: make(chan string, 20),
+		Channel: make(chan string, 100),
+		UserID:  uid,
 	}
 	hub.AddClient(client)
+	log.Printf("📡 [SSE] Admin %d connected (UA: %s)", uid, c.Request.UserAgent())
 	defer hub.RemoveClient(client)
 
 	c.Writer.Header().Set("Content-Type", "text/event-stream")

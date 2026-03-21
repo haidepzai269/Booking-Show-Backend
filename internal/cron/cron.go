@@ -94,6 +94,8 @@ func processExpiredOrders() {
 				bookingredis.Client.Del(context.Background(), key)
 				sse.BroadcastSeatUpdate(order.ShowtimeID, seatID, "AVAILABLE")
 			}
+			// Phát SSE cho Admin là đơn hàng đã bị hủy (để cập nhật Stats/Table)
+			sse.BroadcastOrderCancelled(order.ID.String())
 		}
 	}
 }

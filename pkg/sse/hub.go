@@ -11,6 +11,7 @@ import (
 
 type Client struct {
 	Channel chan string
+	UserID  int // Thêm UserID để debug
 }
 
 type Hub struct {

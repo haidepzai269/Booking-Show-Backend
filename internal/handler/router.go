@@ -188,10 +188,12 @@ func SetupRouter(r *gin.Engine, cfg *config.Config) {
 		admin.DELETE("/cinemas/:id", middleware.RequireRole("ADMIN"), adminHandler.DeleteCinema)
 		admin.GET("/cinemas/:id/rooms", adminHandler.ListAdminRoomsByCinema)
 		admin.POST("/cinemas/:id/rooms", adminHandler.CreateRoom)
+		admin.PUT("/rooms/:id", adminHandler.UpdateRoom)
 		admin.DELETE("/rooms/:id", middleware.RequireRole("ADMIN"), adminHandler.DeleteRoom)
 		admin.GET("/rooms/:id/seats", adminHandler.GetRoomSeats)
 		admin.POST("/rooms/:id/seats", adminHandler.InitSeats)
 		admin.PUT("/rooms/:id/seats/layout", adminHandler.UpdateSeatsLayout)
+		admin.POST("/rooms/:id/seats/ai-layout", adminHandler.GenerateAILayout)
 
 		// Concessions
 		admin.GET("/concessions", adminHandler.ListAdminConcessions)
