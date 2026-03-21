@@ -173,7 +173,15 @@ func SetupRouter(r *gin.Engine, cfg *config.Config) {
 	admin.Use(middleware.AuthMiddleware(cfg), middleware.RequireRole("ADMIN", "CINEMA_MANAGER"))
 	{
 		// Dashboard
+		// Notifications
+		notifHandler := NewNotificationHandler()
+		admin.GET("/notifications", notifHandler.ListNotifications)
+		admin.PUT("/notifications/mark-read", notifHandler.MarkAllRead)
+		admin.DELETE("/notifications/:id", notifHandler.DeleteNotification)
+		admin.DELETE("/notifications/all", notifHandler.ClearAllNotifications)
+
 		admin.GET("/stats", adminHandler.GetDashboardStats)
+		admin.POST("/notifications/test", adminHandler.TestAdminBroadcast)
 
 		// Movies CRUD
 		admin.GET("/movies", adminHandler.ListAdminMovies)

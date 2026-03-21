@@ -3,6 +3,7 @@ package handler
 import (
 	"io"
 	"log"
+	"time"
 
 	"github.com/booking-show/booking-show-api/pkg/sse"
 	"github.com/gin-gonic/gin"
@@ -43,15 +44,24 @@ func (h *AdminSSEHandler) Stream(c *gin.Context) {
 	c.SSEvent("ping", "connected")
 	c.Writer.Flush()
 
+	ticker := time.NewTicker(20 * time.Second)
+	defer ticker.Stop()
+
 	c.Stream(func(w io.Writer) bool {
 		select {
 		case msg, ok := <-client.Channel:
 			if !ok {
+				log.Printf("⚠️ [SSE] Admin %d channel closed, terminating stream", uid)
 				return false
 			}
 			c.SSEvent("notification", msg)
 			return true
+		case <-ticker.C:
+			// Send heartbeat ping to keep connection alive
+			c.SSEvent("ping", "keep-alive")
+			return true
 		case <-c.Request.Context().Done():
+			log.Printf("🔌 [SSE] Admin %d client disconnected", uid)
 			return false
 		}
 	})

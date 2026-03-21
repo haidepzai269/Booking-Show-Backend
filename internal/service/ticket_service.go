@@ -271,8 +271,22 @@ func (s *TicketService) ProcessPaymentSuccess(orderIDStr, gateway, transactionID
 			}
 		}()
 		log.Printf("📢 [AdminBroadcast] Sending notification to SSE: %s - %s", user.FullName, movieTitle)
+		
+		// 🛡️ Persistence: Save to database
+		notifSvc := NewNotificationService()
+		notifSvc.CreateNotification(&model.Notification{
+			Type:       "order_completed",
+			OrderID:    orderIDStr,
+			UserName:   user.FullName,
+			MovieTitle: movieTitle,
+			Amount:     order.FinalAmount,
+			Seats:      len(tickets),
+			IsRead:     false,
+			CreatedAt:  time.Now(),
+		})
+
 		sse.BroadcastOrderCompleted(orderIDStr, user.FullName, movieTitle, order.FinalAmount, len(tickets))
-		log.Printf("✅ [AdminBroadcast] Notification sent for order %s", orderIDStr)
+		log.Printf("✅ [AdminBroadcast] Notification sent and saved for order %s", orderIDStr)
 	}()
 
 	// 🔔 2. Xóa Cache (Thực hiện sau để không làm chậm thông báo)

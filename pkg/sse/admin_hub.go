@@ -101,13 +101,20 @@ func BroadcastOrderCancelled(orderID string) {
 
 func publishAdminNotification(notif AdminNotification) {
 	data, _ := json.Marshal(notif)
+	
 	if bookingredis.Client != nil {
-		bookingredis.Client.Publish(context.Background(), "sse:admin_notifications", data)
-		log.Printf("[AdminHub] Redis PUBLISH: sse:admin_notifications -> %s", string(data))
+		err := bookingredis.Client.Publish(context.Background(), "sse:admin_notifications", data).Err()
+		if err != nil {
+			log.Printf("❌ [AdminHub] Redis PUBLISH FAILED: %v", err)
+			// Nếu Redis lỗi, fallback broadcast local để đảm bảo admin hiện tại vẫn nhận được
+			GetAdminHub().Broadcast(string(data))
+		} else {
+			log.Printf("[AdminHub] Redis PUBLISH SUCCESS: sse:admin_notifications (will be broadcasted by Subscriber)")
+		}
 	} else {
-		// Fallback local
+		// Nếu không dùng Redis (local mode), broadcast trực tiếp
+		log.Printf("[AdminHub] No Redis, performing LOCAL Broadcast...")
 		GetAdminHub().Broadcast(string(data))
-		log.Printf("[AdminHub] Local Broadcast: %s", string(data))
 	}
 }
 

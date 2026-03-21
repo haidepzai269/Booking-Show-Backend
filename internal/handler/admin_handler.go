@@ -13,6 +13,7 @@ import (
 	"github.com/booking-show/booking-show-api/internal/service"
 	"github.com/booking-show/booking-show-api/pkg/cloudinary"
 	redispkg "github.com/booking-show/booking-show-api/pkg/redis"
+	"github.com/booking-show/booking-show-api/pkg/sse"
 	"github.com/cloudinary/cloudinary-go/v2/api/uploader"
 	"github.com/gin-gonic/gin"
 )
@@ -554,5 +555,23 @@ func (h *AdminHandler) ListAdminRefunds(c *gin.Context) {
 			"limit": limit,
 			"total": total,
 		},
+	})
+}
+
+// TestAdminBroadcast - Gửi thông báo giả lập để test SSE
+func (h *AdminHandler) TestAdminBroadcast(c *gin.Context) {
+	log.Printf("🧪 [AdminHandler] Triggering TestAdminBroadcast...")
+	
+	sse.BroadcastOrderCompleted(
+		"TEST-ORDER-ID", 
+		"Hệ thống Test", 
+		"Phim Test Real-time", 
+		99000, 
+		2,
+	)
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "Test notification triggered successfully",
 	})
 }
