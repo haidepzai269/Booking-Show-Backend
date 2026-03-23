@@ -40,6 +40,7 @@ func main() {
 
 	// Khởi động worker newsletter
 	worker.StartNewsletterWorker()
+	worker.StartAIModerationWorker()
 
 	// Khởi động cronjob 1 phút check 1 lần đễ dọn dẹp các khoản thanh toán quá 10p
 	cron.StartOrderCleanupCronjob()

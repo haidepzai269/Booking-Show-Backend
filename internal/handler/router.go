@@ -31,6 +31,8 @@ func SetupRouter(r *gin.Engine, cfg *config.Config) {
 	userHandler := NewUserHandler()
 	campaignHandler := NewCampaignHandler()
 	chatHandler := NewChatHandler()
+	reviewHandler := NewReviewHandler()
+	blacklistedWordHandler := NewBlacklistedWordHandler()
 
 	// ─── Public: Auth ────────────────────────────────────────────────────────
 	auth := v1.Group("/auth")
@@ -59,6 +61,8 @@ func SetupRouter(r *gin.Engine, cfg *config.Config) {
 		movies.GET("/:id", movieHandler.GetMovie)
 		movies.GET("/:id/extra", movieHandler.GetMovieExtraInfo)
 		movies.GET("/:id/showtimes", showtimeHandler.GetShowtimes)
+		movies.GET("/:id/reviews", middleware.SoftAuthMiddleware(cfg), reviewHandler.ListMovieReviews)
+		movies.GET("/:id/reviews/stream", reviewHandler.StreamMovieReviews)
 	}
 
 	// ─── Public: Cinemas ─────────────────────────────────────────────────────
@@ -159,6 +163,11 @@ func SetupRouter(r *gin.Engine, cfg *config.Config) {
 		// User profile
 		protected.GET("/users/me", userHandler.GetMe)
 		protected.PUT("/users/me", userHandler.UpdateMe)
+
+		// Reviews
+		protected.POST("/movies/:id/reviews", reviewHandler.CreateReview)
+		protected.POST("/movies/:id/reviews/:reviewId/like", reviewHandler.ToggleLikeReview)
+		protected.DELETE("/movies/:id/reviews/:reviewId", reviewHandler.DeleteReview)
 	}
 
 	// ─── Staff only (Admin + Cinema Manager) ─────────────────────────────────
@@ -243,5 +252,14 @@ func SetupRouter(r *gin.Engine, cfg *config.Config) {
 
 		// Notifications SSE stream
 		admin.GET("/notifications/stream", adminSSEHandler.Stream)
+
+		// Reviews
+		admin.GET("/reviews", reviewHandler.ListAdminReviews)
+		admin.PUT("/reviews/:id/status", reviewHandler.UpdateReviewStatus)
+
+		// Blacklisted Words
+		admin.GET("/blacklisted-words", blacklistedWordHandler.GetBlacklistedWords)
+		admin.POST("/blacklisted-words", blacklistedWordHandler.AddBlacklistedWord)
+		admin.DELETE("/blacklisted-words/:id", blacklistedWordHandler.DeleteBlacklistedWord)
 	}
 }

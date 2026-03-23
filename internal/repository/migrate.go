@@ -31,6 +31,9 @@ func MigrateDB() {
 		&model.ChatHistory{},
 		&model.NewsletterSubscription{},
 		&model.Notification{},
+		&model.Review{},
+		&model.ReviewLike{},
+		&model.BlacklistedWord{},
 	)
 
 	if err != nil {

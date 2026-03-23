@@ -34,6 +34,8 @@ type User struct {
 	TotalSpending   float64   `json:"total_spending" gorm:"type:decimal(15,2);default:0"`
 	Theme           string    `json:"theme" gorm:"type:varchar(20);default:'dark'"`
 	Language        string    `json:"language" gorm:"type:varchar(10);default:'vi'"`
+	StrikeCount     int       `json:"strike_count" gorm:"default:0"`
+	MutedUntil      *time.Time `json:"muted_until"`
 	CreatedAt       time.Time `json:"created_at" gorm:"autoCreateTime"`
 	UpdatedAt       time.Time `json:"updated_at" gorm:"autoUpdateTime"`
 	IsActive        bool      `json:"is_active" gorm:"default:true"`
