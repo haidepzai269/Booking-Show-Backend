@@ -62,6 +62,16 @@ func (h *MovieHandler) GetHomeMovies(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"success": true, "data": result})
 }
 
+func (h *MovieHandler) GetNowShowingMovies(c *gin.Context) {
+	movies, err := h.MovieService.GetNowShowingMovies()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "Failed to fetch now showing movies"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": movies})
+}
+
 func (h *MovieHandler) GetMovie(c *gin.Context) {
 	idStr := c.Param("id")
 	id, err := strconv.Atoi(idStr)

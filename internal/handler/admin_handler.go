@@ -194,8 +194,9 @@ func (h *AdminHandler) ListAdminMovies(c *gin.Context) {
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
 	q := c.Query("q")
 	onlyActive := c.Query("active") == "true"
+	filter := c.Query("filter")
 
-	cacheKey := "admin:movies:list:" + strconv.Itoa(page) + ":" + strconv.Itoa(limit) + ":" + q + ":" + strconv.FormatBool(onlyActive)
+	cacheKey := "admin:movies:list:" + strconv.Itoa(page) + ":" + strconv.Itoa(limit) + ":" + q + ":" + strconv.FormatBool(onlyActive) + ":" + filter
 
 	// Get from Cache
 	if redispkg.Client != nil {
@@ -209,7 +210,7 @@ func (h *AdminHandler) ListAdminMovies(c *gin.Context) {
 	}
 
 	movieService := &service.MovieService{}
-	result, err := movieService.ListAdminMovies(page, limit, q, onlyActive)
+	result, err := movieService.ListAdminMovies(page, limit, q, onlyActive, filter)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
 		return

@@ -87,33 +87,47 @@ func (s *MovieService) GetHomeMovies() (*HomeMoviesResponse, error) {
 	// 2. Cache miss → Query DB
 	log.Println("[Cache MISS] movies:home - querying DB")
 
-	// Lấy 8 phim mới nhất làm "hot"
+	// 2. Cache miss → Query DB
+	log.Println("[Cache MISS] movies:home - querying DB")
+
+	// Lọc Phim Nổi Bật (Featured) - Lấy 1 phim
+	var featuredMovie model.Movie
+	if err := repository.DB.Preload("Genres").Where("is_active = ? AND is_featured = ?", true, true).
+		Order("release_date DESC").First(&featuredMovie).Error; err != nil {
+		// Fallback: Lấy phim mới nhất nếu không có phim nào được đánh dấu Featured
+		repository.DB.Preload("Genres").Where("is_active = ?", true).
+			Order("release_date DESC").First(&featuredMovie)
+	}
+
+	// Lấy Phim Hot (Ưu tiên is_hot = true)
 	var hotMovies []model.Movie
-	if err := repository.DB.Preload("Genres").Where("is_active = ?", true).
-		Order("release_date DESC").Limit(8).Find(&hotMovies).Error; err != nil {
-		return nil, err
+	if err := repository.DB.Preload("Genres").Where("is_active = ? AND is_hot = ?", true, true).
+		Order("release_date DESC").Limit(8).Find(&hotMovies).Error; err != nil || len(hotMovies) == 0 {
+		// Fallback: Lấy các phim mới nhất
+		repository.DB.Preload("Genres").Where("is_active = ?", true).
+			Order("release_date DESC").Limit(8).Find(&hotMovies)
 	}
 
 	if len(hotMovies) == 0 {
 		return &HomeMoviesResponse{}, nil
 	}
 
-	// Featured = phim đầu tiên (mới nhất)
-	featured := hotMovies[0]
-	// Hot = 4 phim đầu (không bao gồm featured)
+	// Hot list hiển thị (không bao gồm featured ở một số giao diện, nhưng ở đây ta cứ lấy đủ)
 	hot := hotMovies
 	if len(hot) > 4 {
 		hot = hot[:4]
 	}
 
-	// Best selling = lấy theo thứ tự doanh số (từ orders/tickets - đơn giản hóa: lấy 4 phim tiếp theo)
+	// Lấy Phim Bán Chạy (Best Selling - Ưu tiên is_best_selling = true)
 	var bestSelling []model.Movie
-	if err := repository.DB.Preload("Genres").Where("is_active = ?", true).
-		Order("release_date ASC").Limit(4).Find(&bestSelling).Error; err != nil {
-		return nil, err
+	if err := repository.DB.Preload("Genres").Where("is_active = ? AND is_best_selling = ?", true, true).
+		Order("release_date DESC").Limit(4).Find(&bestSelling).Error; err != nil || len(bestSelling) == 0 {
+		// Fallback: Lấy các phim có release_date gần đây
+		repository.DB.Preload("Genres").Where("is_active = ?", true).
+			Order("release_date ASC").Limit(4).Find(&bestSelling)
 	}
 
-	// Coming soon = release_date > today
+	// Lấy Phim Sắp Chiếu (release_date > today)
 	var comingSoon []model.Movie
 	if err := repository.DB.Preload("Genres").Where("is_active = ? AND release_date > ?", true, time.Now()).
 		Order("release_date ASC").Limit(6).Find(&comingSoon).Error; err != nil {
@@ -149,7 +163,7 @@ func (s *MovieService) GetHomeMovies() (*HomeMoviesResponse, error) {
 		comingSoonDTOs = append(comingSoonDTOs, getRating(m))
 	}
 
-	featuredDTO := getRating(featured)
+	featuredDTO := getRating(featuredMovie)
 
 	result := &HomeMoviesResponse{
 		Featured:    &featuredDTO,
@@ -206,6 +220,9 @@ type CreateMovieReq struct {
 	PosterURL       string `json:"poster_url"`
 	TrailerURL      string `json:"trailer_url"`
 	GenreIDs        []int  `json:"genre_ids"`
+	IsHot           bool   `json:"is_hot"`
+	IsBestSelling   bool   `json:"is_best_selling"`
+	IsFeatured      bool   `json:"is_featured"`
 }
 
 func (s *MovieService) CreateMovie(req CreateMovieReq) (*model.Movie, error) {
@@ -215,6 +232,9 @@ func (s *MovieService) CreateMovie(req CreateMovieReq) (*model.Movie, error) {
 		DurationMinutes: req.DurationMinutes,
 		PosterURL:       req.PosterURL,
 		TrailerURL:      req.TrailerURL,
+		IsHot:           req.IsHot,
+		IsBestSelling:   req.IsBestSelling,
+		IsFeatured:      req.IsFeatured,
 	}
 
 	if len(req.GenreIDs) > 0 {
@@ -271,6 +291,9 @@ type UpdateMovieReq struct {
 	TrailerURL      string `json:"trailer_url"`
 	GenreIDs        []int  `json:"genre_ids"`
 	IsActive        *bool  `json:"is_active"`
+	IsHot           *bool  `json:"is_hot"`
+	IsBestSelling   *bool  `json:"is_best_selling"`
+	IsFeatured      *bool  `json:"is_featured"`
 }
 
 // UpdateMovie - Cập nhật thông tin phim
@@ -298,6 +321,15 @@ func (s *MovieService) UpdateMovie(id int, req UpdateMovieReq) (*model.Movie, er
 	}
 	if req.IsActive != nil {
 		movie.IsActive = *req.IsActive
+	}
+	if req.IsHot != nil {
+		movie.IsHot = *req.IsHot
+	}
+	if req.IsBestSelling != nil {
+		movie.IsBestSelling = *req.IsBestSelling
+	}
+	if req.IsFeatured != nil {
+		movie.IsFeatured = *req.IsFeatured
 	}
 	if req.ReleaseDate != "" {
 		parsed, err := time.Parse("2006-01-02", req.ReleaseDate)
@@ -358,7 +390,7 @@ type ListAdminMoviesResult struct {
 }
 
 // ListAdminMovies - danh sách phim cho admin (có pagination, filter, search)
-func (s *MovieService) ListAdminMovies(page, limit int, q string, onlyActive bool) (*ListAdminMoviesResult, error) {
+func (s *MovieService) ListAdminMovies(page, limit int, q string, onlyActive bool, filter string) (*ListAdminMoviesResult, error) {
 	if page <= 0 {
 		page = 1
 	}
@@ -367,7 +399,8 @@ func (s *MovieService) ListAdminMovies(page, limit int, q string, onlyActive boo
 	}
 	offset := (page - 1) * limit
 
-	db := repository.DB.Preload("Genres")
+	// 1. Ap dung bo loc co ban
+	db := repository.DB.Model(&model.Movie{})
 	if onlyActive {
 		db = db.Where("is_active = ?", true)
 	}
@@ -375,13 +408,50 @@ func (s *MovieService) ListAdminMovies(page, limit int, q string, onlyActive boo
 		db = db.Where("title ILIKE ?", "%"+q+"%")
 	}
 
+	// 2. Ap dung bo loc dac biet CHO COUNT (chi nhung cai lam thay doi so luong dong)
+	if filter == "coming_soon" {
+		db = db.Where("release_date > ?", time.Now())
+	}
+
 	var total int64
-	if err := db.Model(&model.Movie{}).Count(&total).Error; err != nil {
+	if err := db.Count(&total).Error; err != nil {
 		return nil, err
 	}
 
+	// 3. Ap dung logic lay du lieu (Preload, Joins, Order)
+	query := repository.DB.Preload("Genres").
+		Where("id IN (?)", repository.DB.Model(&model.Movie{}).Select("id").Where(db.Statement.Context.Value("gorm:db"))) // Reuse filters
+
+	// Re-apply filters to a fresh query to avoid side effects from Count
+	query = repository.DB.Preload("Genres")
+	if onlyActive {
+		query = query.Where("movies.is_active = ?", true)
+	}
+	if q != "" {
+		query = query.Where("movies.title ILIKE ?", "%"+q+"%")
+	}
+	if filter == "coming_soon" {
+		query = query.Where("movies.release_date > ?", time.Now())
+	}
+
+	switch filter {
+	case "hot":
+		query = query.Order("movies.is_hot DESC, movies.release_date DESC")
+	case "coming_soon":
+		query = query.Order("movies.release_date ASC")
+	case "best_selling":
+		// Uu tien phim duoc danh dau is_best_selling, sau do den doanh so thuc te
+		query = query.Joins("LEFT JOIN showtimes ON showtimes.movie_id = movies.id").
+			Joins("LEFT JOIN orders ON orders.showtime_id = showtimes.id AND orders.status = 'COMPLETED'").
+			Group("movies.id").
+			Select("movies.*, COUNT(orders.id) as sales_count").
+			Order("movies.is_best_selling DESC, sales_count DESC")
+	default:
+		query = query.Order("movies.created_at DESC")
+	}
+
 	var movies []model.Movie
-	if err := db.Order("created_at DESC").Limit(limit).Offset(offset).Find(&movies).Error; err != nil {
+	if err := query.Limit(limit).Offset(offset).Find(&movies).Error; err != nil {
 		return nil, err
 	}
 
@@ -565,4 +635,25 @@ func (s *MovieService) SearchMovies(req SearchMoviesReq) ([]model.Movie, error) 
 	}
 
 	return movies, nil
+}
+
+// GetNowShowingMovies - Lấy danh sách phim đang có suất chiếu (sắp xếp theo thời gian chiếu sớm nhất)
+func (s *MovieService) GetNowShowingMovies() ([]model.Movie, error) {
+	var movies []model.Movie
+
+	// Subquery để lấy phim và thời gian chiếu sớm nhất của nó
+	subQuery := repository.DB.Model(&model.Showtime{}).
+		Select("movie_id, MIN(start_time) as earliest").
+		Where("start_time > ? AND is_active = ?", time.Now(), true).
+		Group("movie_id")
+
+	err := repository.DB.Preload("Genres").
+		Table("movies").
+		Joins("JOIN (?) as st ON st.movie_id = movies.id", subQuery).
+		Where("movies.is_active = ?", true).
+		Order("st.earliest ASC").
+		Limit(15). // Lấy 15 phim (để xoay vòng 5 lần, mỗi lần 3 phim)
+		Find(&movies).Error
+
+	return movies, err
 }

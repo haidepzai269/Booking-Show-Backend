@@ -57,6 +57,7 @@ func SetupRouter(r *gin.Engine, cfg *config.Config) {
 	{
 		movies.GET("/", movieHandler.ListMovies)
 		movies.GET("/home", movieHandler.GetHomeMovies)  // Redis cached: featured + hot + best-selling
+		movies.GET("/now-showing", movieHandler.GetNowShowingMovies)
 		movies.GET("/search", movieHandler.SearchMovies) // Tìm kiếm nâng cao: ?q=&genre_id=&sort=
 		movies.GET("/:id", movieHandler.GetMovie)
 		movies.GET("/:id/extra", movieHandler.GetMovieExtraInfo)
