@@ -24,7 +24,7 @@ type Movie struct {
 	IsHot           bool             `json:"is_hot" gorm:"default:false"`
 	IsBestSelling   bool             `json:"is_best_selling" gorm:"default:false"`
 	IsFeatured      bool             `json:"is_featured" gorm:"default:false"`
-	Embedding       *pgvector.Vector `json:"-" gorm:"type:vector(384)"`
+	Embedding       *pgvector.Vector `json:"-" gorm:"type:vector(1024)"`
 
 	Genres []Genre `json:"genres" gorm:"many2many:movie_genres;"`
 }

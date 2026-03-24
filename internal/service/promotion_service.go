@@ -6,6 +6,7 @@ import (
 
 	"github.com/booking-show/booking-show-api/internal/model"
 	"github.com/booking-show/booking-show-api/internal/repository"
+	"github.com/pgvector/pgvector-go"
 )
 
 type PromotionService struct{}
@@ -126,6 +127,13 @@ func (s *PromotionService) CreatePromotion(req PromotionReq) (*model.Promotion, 
 		return nil, err
 	}
 
+	// Tạo Embedding cho khuyến mãi
+	aiSvc := NewAIService("", "")
+	if vec, err := aiSvc.GenerateEmbedding("Khuyến mãi/Voucher/Promotion: " + promo.Code + ". " + promo.Description); err == nil && len(vec) == 1024 {
+		v := pgvector.NewVector(vec)
+		repository.DB.Model(&promo).Update("embedding", &v)
+	}
+
 	return &promo, nil
 }
 
@@ -149,6 +157,13 @@ func (s *PromotionService) UpdatePromotion(id int, req PromotionReq) (*model.Pro
 
 	if err := repository.DB.Save(&promo).Error; err != nil {
 		return nil, err
+	}
+
+	// Cập nhật Embedding
+	aiSvc := NewAIService("", "")
+	if vec, err := aiSvc.GenerateEmbedding("Khuyến mãi/Voucher/Promotion: " + promo.Code + ". " + promo.Description); err == nil && len(vec) == 1024 {
+		v := pgvector.NewVector(vec)
+		repository.DB.Model(&promo).Update("embedding", &v)
 	}
 
 	return &promo, nil

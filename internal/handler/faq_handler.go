@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"os"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/booking-show/booking-show-api/internal/model"
@@ -15,6 +14,7 @@ import (
 	"github.com/booking-show/booking-show-api/internal/service"
 	redispkg "github.com/booking-show/booking-show-api/pkg/redis"
 	"github.com/gin-gonic/gin"
+	"github.com/pgvector/pgvector-go"
 )
 
 type FAQHandler struct{}
@@ -45,57 +45,14 @@ func (h *FAQHandler) AskFAQ(c *gin.Context) {
 	// Xóa đoạn goroutine save db cũ ở đây vì chưa có answer
 
 	// Bốc dữ liệu phim đang chiếu
-	var allMovies []model.Movie
-	if redispkg.Client != nil {
-		if cached, err := redispkg.Client.Get(redispkg.Ctx, "movies:all").Result(); err == nil {
-			_ = json.Unmarshal([]byte(cached), &allMovies)
-		}
+	aiSvc := service.NewAIService("", "")
+
+	// 1. Tìm ngữ cảnh liên quan bằng Vector Search (Voyage AI 1024-dim)
+	knowledgeContext, err := aiSvc.SearchContext(req.Question)
+	if err != nil {
+		log.Printf("Warning: Vector Search context failed: %v", err)
+		knowledgeContext = "Hiện tại không lấy được thông tin chi tiết từ cơ sở tri thức."
 	}
-	if len(allMovies) == 0 {
-		repository.DB.Preload("Genres").Where("is_active = ?", true).Find(&allMovies)
-	}
-
-	var metaStr strings.Builder
-	var wg sync.WaitGroup
-	var mu sync.Mutex
-	extraSvc := &service.MovieExtraService{}
-
-	for i, m := range allMovies {
-		wg.Add(1)
-		go func(index int, movie model.Movie) {
-			defer wg.Done()
-			genreNames := ""
-			for _, g := range movie.Genres {
-				genreNames += g.Name + " "
-			}
-
-			// Gọi service extra để lấy đạo diễn & diễn viên qua Redis/TMDB
-			// Quá trình này được chạy song song cho tất cả các phim nên cực kỳ nhanh
-			extra, err := extraSvc.GetExtraInfo(movie.ID)
-			director := "Đang cập nhật"
-			castStr := "Đang cập nhật"
-
-			if err == nil && extra != nil {
-				director = extra.Director
-				var casts []string
-				for _, c := range extra.Cast {
-					casts = append(casts, c.Name)
-				}
-				if len(casts) > 0 {
-					castStr = strings.Join(casts, ", ")
-				}
-			}
-
-			info := fmt.Sprintf("%d. %s - Phân loại: %s. Thời lượng: %d phút.\nĐạo diễn: %s. Diễn viên chính: %s.\nTóm tắt: %.100s\n",
-				index+1, movie.Title, genreNames, movie.DurationMinutes, director, castStr, movie.Description)
-
-			// Lock để viết vào chuỗi RAG an toàn
-			mu.Lock()
-			metaStr.WriteString(info)
-			mu.Unlock()
-		}(i, m)
-	}
-	wg.Wait()
 
 	// LẤY NGỮ CẢNH NGƯỜI DÙNG (LỊCH SỬ XEM PHIM)
 	userContext := "Người dùng chưa có lịch sử mua vé hoặc chưa đăng nhập."
@@ -152,32 +109,8 @@ func (h *FAQHandler) AskFAQ(c *gin.Context) {
 
 	// 3. Nếu vẫn không có mới gọi AI
 	if answer == "" {
-		aiSvc := service.NewAIService("", "")
-
-		// LẤY DỮ LIỆU BẮP NƯỚC & KHUYẾN MÃI
-		var servicesData strings.Builder
-		conSvc := &service.ConcessionService{}
-		concessions, _ := conSvc.ListConcessions()
-		if len(concessions) > 0 {
-			servicesData.WriteString("--- DANH SÁCH BẮP NƯỚC (CONCESSIONS) ---\n")
-			for _, c := range concessions {
-				servicesData.WriteString(fmt.Sprintf("- %s: %d VNĐ (%s)\n", c.Name, c.Price, c.Description))
-			}
-		}
-
-		promoSvc := &service.PromotionService{}
-		promotions, _ := promoSvc.ListActivePromotions()
-		if len(promotions) > 0 {
-			servicesData.WriteString("\n--- MÃ GIẢM GIÁ ĐANG HOẠT ĐỘNG (PROMOTIONS) ---\n")
-			for _, p := range promotions {
-				servicesData.WriteString(fmt.Sprintf("- Mã %s: Giảm %d VNĐ (Điều kiện: Đơn hàng từ %d VNĐ). %s\n", p.Code, p.DiscountAmount, p.MinOrderValue, p.Description))
-			}
-		}
-
-		log.Printf("[AI CONTEXT] Services Data:\n%s\n", servicesData.String())
-
 		var err error
-		answer, err = aiSvc.AnswerFAQ(req.Question, metaStr.String(), userContext, servicesData.String())
+		answer, err = aiSvc.AnswerFAQ(req.Question, knowledgeContext, userContext)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "AI đang bận, xin vui lòng thử lại sau.", "details": err.Error()})
 			return
@@ -211,7 +144,15 @@ func (h *FAQHandler) AskFAQ(c *gin.Context) {
 			faq.Answer = a // Cập nhật câu trả lời mới nhất
 			repository.DB.Save(&faq)
 		} else {
-			repository.DB.Create(&model.FAQLog{Question: q, Answer: a, AskCount: 1})
+			faq = model.FAQLog{Question: q, Answer: a, AskCount: 1}
+			repository.DB.Create(&faq)
+		}
+
+		// Tạo/Cập nhật Embedding cho FAQ bất đồng bộ
+		aiSvc := service.NewAIService("", "")
+		if vec, err := aiSvc.GenerateEmbedding("Câu hỏi thường gặp/FAQ: " + q); err == nil && len(vec) == 1024 {
+			v := pgvector.NewVector(vec)
+			repository.DB.Model(&faq).Update("embedding", &v)
 		}
 
 		// Xóa cache cũ để hệ thống cập nhật lại câu hỏi Top ngay khi người dùng F5 web

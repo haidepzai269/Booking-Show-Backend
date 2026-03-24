@@ -89,6 +89,17 @@ func GetAvailableTools() []ToolDefinition {
 				},
 			},
 		},
+		{
+			Type: "function",
+			Function: ToolFunction{
+				Name:        "get_now_showing_movies",
+				Description: "Lấy danh sách tất cả các phim hiện đang có suất chiếu tại rạp. Dùng khi người dùng hỏi 'phim nào đang chiếu', 'có suất chiếu nào không', v.v.",
+				Parameters: map[string]interface{}{
+					"type":       "object",
+					"properties": map[string]interface{}{},
+				},
+			},
+		},
 	}
 }
 
@@ -157,6 +168,30 @@ func ExecuteTool(name string, args string) (string, error) {
 
 		res, _ := json.Marshal(movies)
 		return string(res), nil
+
+	case "get_now_showing_movies":
+		movieSvc := &MovieService{}
+		// Lấy danh sách phim đang chiếu (Now Showing)
+		movies, err := movieSvc.GetNowShowingMovies()
+		if err != nil {
+			return "", err
+		}
+
+		if len(movies) == 0 {
+			return "Hiện tại hệ thống chưa có suất chiếu nào được lên lịch. Bạn vui lòng quay lại sau nhé!", nil
+		}
+
+		// Chỉ lấy tên và ID để ngắn gọn context
+		var result []map[string]interface{}
+		for _, m := range movies {
+			result = append(result, map[string]interface{}{
+				"id":    m.ID,
+				"title": m.Title,
+			})
+		}
+
+		res, _ := json.Marshal(result)
+		return "Danh sách phim đang có suất chiếu: " + string(res), nil
 
 	case "get_seat_map":
 		var argData struct {

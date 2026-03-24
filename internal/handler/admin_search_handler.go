@@ -16,7 +16,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/pgvector/pgvector-go"
-	"gorm.io/gorm"
 )
 
 // TTL constants
@@ -182,85 +181,75 @@ func searchMoviesWithAI(q, like string, aiUsed *bool) []SearchResultMovie {
 		}
 	}
 
-	// --- Thử AI LLM Phân tích ngữ nghĩa nếu query đủ dài (Hybrid LLM Search) ---
-	if len(q) >= 3 {
-		movieSvc := &service.MovieService{}
-		meta, _ := movieSvc.GetMoviesMeta()
-		if meta != "" {
-			aiSvc := service.NewAIService("", "")
-			matchedIDs, err := aiSvc.AnalyzeSearchQuery(q, meta)
-			if err == nil && len(matchedIDs) > 0 {
-				log.Printf("[Admin AI LLM Search] q='%s' -> Matched IDs: %v", q, matchedIDs)
-				var allMovies []model.Movie
-				repository.DB.Where("id IN ? AND is_active = ?", matchedIDs, true).Find(&allMovies)
+	// --- THỰC HIỆN HYBRID SEARCH (Keyword + Vector) ---
+	if len(q) >= 2 {
+		// 1. Keyword Search (Title + Description + Genre)
+		var keywordMovies []model.Movie
+		repository.DB.Model(&model.Movie{}).
+			Preload("Genres").
+			Joins("LEFT JOIN movie_genres ON movie_genres.movie_id = movies.id").
+			Joins("LEFT JOIN genres ON genres.id = movie_genres.genre_id").
+			Where("movies.is_active = ? AND (movies.title ILIKE ? OR movies.description ILIKE ? OR genres.name ILIKE ? OR ? ILIKE '%' || genres.name || '%')", 
+				true, "%"+q+"%", "%"+q+"%", "%"+q+"%", q).
+			Group("movies.id").
+			Limit(5).
+			Find(&keywordMovies)
 
-				if len(allMovies) > 0 {
-					// Sắp xếp theo thứ tự AI trả về
-					idMap := make(map[int]model.Movie)
-					for _, m := range allMovies {
-						idMap[m.ID] = m
-					}
-					var results []SearchResultMovie
-					for _, id := range matchedIDs {
-						if m, ok := idMap[id]; ok {
-							results = append(results, SearchResultMovie{
-								ID:       m.ID,
-								Title:    m.Title,
-								Poster:   m.PosterURL,
-								IsActive: m.IsActive,
-								AIMatch:  true,
-							})
-						}
-					}
-
-					*aiUsed = true
-					if redispkg.Client != nil {
-						if data, err := json.Marshal(results); err == nil {
-							redispkg.Client.Set(redispkg.Ctx, aiCacheKey, data, adminAISearchTTL)
-						}
-					}
-					return results
-				}
-			}
-		}
-
-		// --- Fallback: AI Vector Search ---
+		// 2. Vector Search (Voyage AI 1024-dim) - Sử dụng Raw SQL để pgvector hoạt động chuẩn
 		aiSvc := service.NewAIService("", "")
 		embedding, err := aiSvc.GenerateEmbedding(q)
-		if err == nil && len(embedding) > 0 {
-			var allMovies []model.Movie
+		
+		var vectorMovies []model.Movie
+		if err == nil && len(embedding) == 1024 {
 			vec := pgvector.NewVector(embedding)
+			err = repository.DB.Raw(`
+				SELECT * FROM movies 
+				WHERE is_active = true AND embedding IS NOT NULL 
+				ORDER BY embedding <=> ? 
+				LIMIT 5
+			`, vec).Scan(&vectorMovies).Error
+			
+			if err == nil {
+				// Preload Genres thủ công
+				for i := range vectorMovies {
+					repository.DB.Model(&vectorMovies[i]).Association("Genres").Find(&vectorMovies[i].Genres)
+				}
+			}
+			*aiUsed = true
+			log.Printf("[Admin AI Vector Search] q='%s' -> Found %d movies", q, len(vectorMovies))
+		}
 
-			repository.DB.Where("is_active = ?", true).
-				Order(gorm.Expr("NULLIF(embedding::text, '')::vector <=> ?", vec)).
-				Limit(5).
-				Find(&allMovies)
+		// 3. Merge Results
+		seen := make(map[int]bool)
+		var results []SearchResultMovie
 
-			log.Printf("[Admin AI Vector Search] q='%s' -> Found: %v", q, len(allMovies))
-
-			var results []SearchResultMovie
-			for _, m := range allMovies {
+		merge := func(m model.Movie, isAIMatch bool) {
+			if !seen[m.ID] {
 				results = append(results, SearchResultMovie{
 					ID:       m.ID,
 					Title:    m.Title,
 					Poster:   m.PosterURL,
 					IsActive: m.IsActive,
-					AIMatch:  true,
+					AIMatch:  isAIMatch,
 				})
+				seen[m.ID] = true
 			}
+		}
 
-			if len(results) > 0 {
-				*aiUsed = true
-				// Cache kết quả AI riêng (TTL 10 phút)
-				if redispkg.Client != nil {
-					if data, err := json.Marshal(results); err == nil {
-						redispkg.Client.Set(redispkg.Ctx, aiCacheKey, data, adminAISearchTTL)
-					}
+		for _, m := range keywordMovies {
+			merge(m, false)
+		}
+		for _, m := range vectorMovies {
+			merge(m, true)
+		}
+
+		if len(results) > 0 {
+			if redispkg.Client != nil {
+				if data, err := json.Marshal(results); err == nil {
+					redispkg.Client.Set(redispkg.Ctx, aiCacheKey, data, adminAISearchTTL)
 				}
-				return results
 			}
-		} else {
-			log.Printf("[Admin AI Vector Search Error] q='%s': %v", q, err)
+			return results
 		}
 	}
 

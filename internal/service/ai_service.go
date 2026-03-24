@@ -11,29 +11,33 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/booking-show/booking-show-api/internal/model"
+	"github.com/booking-show/booking-show-api/internal/repository"
 	"github.com/booking-show/booking-show-api/pkg/redis"
+	"github.com/pgvector/pgvector-go"
 )
 
 type AIService struct {
-	groqAPIKey       string
-	huggingFaceToken string
+	groqAPIKey   string
+	voyageAPIKey string
 }
 
-func NewAIService(groqKey, hfToken string) *AIService {
+func NewAIService(groqKey, voyageKey string) *AIService {
 	// Nếu truyền vào trống, thử đọc từ env (để hỗ trợ các chỗ gọi chưa refactor)
 	if groqKey == "" {
 		groqKey = os.Getenv("GROQ_API_KEY")
 	}
-	if hfToken == "" {
-		hfToken = os.Getenv("HUGGINGFACE_TOKEN")
+	if voyageKey == "" {
+		voyageKey = os.Getenv("VOYAGE_API_KEY")
 	}
 
 	return &AIService{
-		groqAPIKey:       groqKey,
-		huggingFaceToken: hfToken,
+		groqAPIKey:   groqKey,
+		voyageAPIKey: voyageKey,
 	}
 }
 
@@ -141,13 +145,30 @@ Dưới đây là DANH SÁCH PHIM HIỆN CÓ (dữ liệu RAG):
 	return matchedIDs, nil
 }
 
-// GenerateEmbedding - Gọi HuggingFace API để tạo Vector cho nội dung (chuẩn bị dữ liệu cho vector search pgvector)
+// GenerateEmbedding - Gọi Voyage AI API để tạo Vector cho nội dung (chuẩn bị dữ liệu cho vector search pgvector)
 func (s *AIService) GenerateEmbedding(text string) ([]float32, error) {
-	// Sử dụng model của HuggingFace (all-MiniLM-L6-v2: 384 dimensions)
-	url := "https://router.huggingface.co/hf-inference/models/sentence-transformers/all-MiniLM-L6-v2/pipeline/feature-extraction"
+	// 1. Kiểm tra Redis Cache trước để tránh gọi API lặp lại (tiết kiệm RPM/Token)
+	h := sha256.New()
+	h.Write([]byte(text))
+	textHash := hex.EncodeToString(h.Sum(nil))
+	redisKey := "embedding:cache:v3:" + textHash
 
+	if redis.Client != nil {
+		cached, err := redis.Client.Get(redis.Ctx, redisKey).Result()
+		if err == nil {
+			var cachedVec []float32
+			if err := json.Unmarshal([]byte(cached), &cachedVec); err == nil {
+				log.Printf("[Embedding Cache HIT] text: %.30s...\n", text)
+				return cachedVec, nil
+			}
+		}
+	}
+
+	// 2. Nếu Cache MISS -> Gọi Voyage AI API (voyage-3)
+	url := "https://api.voyageai.com/v1/embeddings"
 	payload := map[string]interface{}{
-		"inputs": text,
+		"input": text,
+		"model": "voyage-3",
 	}
 	jsonData, _ := json.Marshal(payload)
 
@@ -156,33 +177,51 @@ func (s *AIService) GenerateEmbedding(text string) ([]float32, error) {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if s.huggingFaceToken != "" {
-		req.Header.Set("Authorization", "Bearer "+s.huggingFaceToken)
+	if s.voyageAPIKey != "" {
+		req.Header.Set("Authorization", "Bearer "+s.voyageAPIKey)
 	}
 
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("huggingface api request failed: %v", err)
+		return nil, fmt.Errorf("voyage ai api request failed: %v", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		bodyBytes, _ := io.ReadAll(resp.Body)
-		// Tránh spam log, trả về lỗi khi API rate limit
-		return nil, fmt.Errorf("huggingface api error %d: %s", resp.StatusCode, string(bodyBytes))
+		return nil, fmt.Errorf("voyage ai api error %d: %s", resp.StatusCode, string(bodyBytes))
 	}
 
-	var vector []float32
-	if err := json.NewDecoder(resp.Body).Decode(&vector); err != nil {
+	var result struct {
+		Data []struct {
+			Embedding []float32 `json:"embedding"`
+		} `json:"data"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return nil, fmt.Errorf("failed to parse embedding response: %v", err)
 	}
 
-	return vector, nil
+	if len(result.Data) == 0 {
+		return nil, fmt.Errorf("no embedding returned from voyage ai")
+	}
+
+	embedding := result.Data[0].Embedding
+
+	// 3. Lưu vào Redis Cache (TTL 7 ngày - vì Vector của cùng 1 text là cố định)
+	if redis.Client != nil {
+		if data, err := json.Marshal(embedding); err == nil {
+			redis.Client.Set(redis.Ctx, redisKey, string(data), 7*24*time.Hour)
+			log.Printf("[Embedding Cache SET] text: %.30s...\n", text)
+		}
+	}
+
+	return embedding, nil
 }
 
-// AnswerFAQ nhận một câu hỏI từ người dùng và sử dụng RAG để trả lời dựa trên context của rạp phim, lịch sử người dùng, bắp nước và khuyến mãi
-func (s *AIService) AnswerFAQ(question string, moviesData string, userContext string, servicesData string) (string, error) {
+// AnswerFAQ nhận một câu hỏi từ người dùng và sử dụng RAG để trả lời dựa trên context đã được tìm kiếm
+func (s *AIService) AnswerFAQ(question string, knowledgeContext string, userContext string) (string, error) {
 	if s.groqAPIKey == "" {
 		return "", fmt.Errorf("GROQ_API_KEY is not configured")
 	}
@@ -190,27 +229,22 @@ func (s *AIService) AnswerFAQ(question string, moviesData string, userContext st
 	systemContext := `Bạn là CHUYÊN GIA TƯ VẤN PHIM & DỊCH VỤ (Movie & Service Concierge) của hệ thống rạp BookingShow.
 Nhiệm vụ: Phân tích gu xem phim, đề xuất phim phù hợp và tư vấn các dịch vụ đi kèm (bắp nước, khuyến mãi).
 
---- DỮ LIỆU PHIM ĐANG CHIẾU ---
-` + moviesData + `
-
---- DỮ LIỆU BẮP NƯỚC & KHUYẾN MÃI ---
-` + servicesData + `
+--- DỮ LIỆU TRI THỨC (KNOWLEDGE BASE) ---
+` + knowledgeContext + `
 
 --- NGỮ CẢNH NGƯỜI DÙNG (DÙNG ĐỂ PHÂN TÍCH GU) ---
 ` + userContext + `
 
 HƯỚNG DẪN TƯ VẤN CỦA "MOVIE CONCIERGE":
 1. PHÂN TÍCH & KẾT NỐI: Nhận diện sở thích người dùng. Nếu họ đã xem phim hành động, hãy nhắc lại.
-2. ĐỀ XUẤT CÁ NHÂN HÓA: Chỉ đề xuất phim trong danh sách ĐANG CHIẾU. Giải thích vì sao nó hợp gu họ.
+2. ĐỀ XUẤT CÁ NHÂN HÓA: Chỉ đề xuất phim hoặc dịch vụ có trong DANH SÁCH TRI THỨC trên. Giải thích vì sao nốt hợp gu họ.
 3. GIA TĂNG TRẢI NGHIỆM (CROSS-SELL):
-   - Khi tư vấn phim hoặc suất chiếu, hãy khéo léo giới thiệu các Combo Bắp Nước phù hợp (Ví dụ: "Xem phim hành động kịch tính mà có thêm Combo bắp ngọt 2 ngăn thì đúng bài bạn ạ!").
-   - Nếu người dùng có vẻ băn khoăn về giá hoặc đang muốn đặt vé, hãy giới thiệu các MÃ GIẢM GIÁ đang hoạt động để khích lệ họ.
-4. THÚC ĐẨY HÀNH ĐỘNG: Gợi ý xem sơ đồ ghế (dùng tool get_seat_map) để chọn chỗ đẹp.
+   - Khi tư vấn phim, hãy khéo léo giới thiệu các Combo Bắp Nước hoặc Khuyến mãi phù hợp đang có trong tri thức.
+4. THÚC ĐẨY HÀNH ĐỘNG: Gợi ý xem sơ đồ ghế (get_seat_map) hoặc đặt vé ngay.
 
 QUY TẮC PHẢN HỒI:
-- Trình bày thông tin bắp nước hoặc khuyến mãi dưới dạng danh sách gọn gàng nếu được hỏi.
-- Luôn giữ thái độ phục vụ chuyên nghiệp, tinh tế, am hiểu.
-- KHÔNG gọi tool nếu thông tin đã có sẵn trong dữ liệu trên.`
+- Trình bày thông tin rõ ràng, chuyên nghiệp.
+- Không bịa đặt thông tin không có trong tri thức.`
 
 	messages := []Message{
 		{Role: "system", Content: systemContext},
@@ -295,6 +329,190 @@ QUY TẮC PHẢN HỒI:
 	}
 
 	return "Tôi đã tìm kiếm nhưng hiện tại không thể lấy đủ thông tin. Vui lòng hỏi lại hoặc liên hệ hotline 1900-1234 để được hỗ trợ nhanh nhất.", nil
+}
+
+// SearchContext - Tìm kiếm ngữ cảnh liên quan từ nhiều nguồn (Movies, Concessions, Promotions, FAQs)
+func (s *AIService) SearchContext(query string) (string, error) {
+	// 1. Kiểm tra Redis Cache cho Context (TTL 1 giờ)
+	// Việc cache cả chuỗi context giúp ChatBot phản hồi cực nhanh cho các câu hỏi phổ biến
+	h := sha256.New()
+	h.Write([]byte(strings.ToLower(strings.TrimSpace(query))))
+	queryHash := hex.EncodeToString(h.Sum(nil))
+	redisKey := "chatbot:context:v1:" + queryHash
+
+	if redis.Client != nil {
+		cached, err := redis.Client.Get(redis.Ctx, redisKey).Result()
+		if err == nil && cached != "" {
+			log.Printf("[ChatBot Context Cache HIT] query: %.30s...\n", query)
+			return cached, nil
+		}
+	}
+
+	// 2. Nếu Cache MISS -> Tiến hành tìm kiếm (đã có cache embedding bên trong GenerateEmbedding)
+	embedding, err := s.GenerateEmbedding(query)
+	if err != nil {
+		return "", err
+	}
+	vec := pgvector.NewVector(embedding)
+
+	var sb strings.Builder
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	
+	// 0. Nếu query liên quan đến "suất chiếu" hoặc "lịch chiếu", ưu tiên lấy phim Now Showing
+	lowerQuery := strings.ToLower(query)
+	if strings.Contains(lowerQuery, "suất chiếu") || strings.Contains(lowerQuery, "đang chiếu") || strings.Contains(lowerQuery, "lịch chiếu") {
+		movieSvc := &MovieService{}
+		nowShowing, _ := movieSvc.GetNowShowingMovies()
+		if len(nowShowing) > 0 {
+			sb.WriteString("\n--- PHIM ĐANG CÓ SUẤT CHIẾU TẠI RẠP ---\n")
+			for _, m := range nowShowing {
+				sb.WriteString(fmt.Sprintf("- %s (ID: %d)\n", m.Title, m.ID))
+			}
+		}
+	}
+
+	// 1. Tìm Phim liên quan (Hybrid Search: Keyword + Vector)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		var keywordMovies []model.Movie
+		var vectorMovies []model.Movie
+
+		// 1a. Keyword Search quét Title, Description và THỂ LOẠI (Cực kỳ quan trọng cho câu hỏi "hoạt hình")
+		repository.DB.Model(&model.Movie{}).
+			Preload("Genres").
+			Joins("LEFT JOIN movie_genres ON movie_genres.movie_id = movies.id").
+			Joins("LEFT JOIN genres ON genres.id = movie_genres.genre_id").
+			Where("movies.is_active = ? AND (movies.title ILIKE ? OR movies.description ILIKE ? OR genres.name ILIKE ? OR ? ILIKE '%' || genres.name || '%')", 
+				true, "%"+query+"%", "%"+query+"%", "%"+query+"%", query).
+			Group("movies.id").
+			Limit(5).
+			Find(&keywordMovies)
+
+		// 1b. Vector Search tìm ý nghĩa tiềm ẩn
+		repository.DB.Raw(`
+			SELECT * FROM movies 
+			WHERE is_active = true AND embedding IS NOT NULL 
+			ORDER BY embedding <=> ? 
+			LIMIT 5
+		`, vec).Scan(&vectorMovies)
+
+		// Trộn kết quả và loại trùng
+		seen := make(map[int]bool)
+		var merged []model.Movie
+		
+		// Ưu tiên Keyword trước (vì nó chính xác tuyệt đối với thể loại)
+		for _, m := range keywordMovies {
+			if !seen[m.ID] {
+				merged = append(merged, m)
+				seen[m.ID] = true
+			}
+		}
+		// Sau đó bồi thêm Vector
+		for _, m := range vectorMovies {
+			if !seen[m.ID] {
+				// Preload Genres thủ công cho kết quả Vector
+				idCopy := m.ID
+				repository.DB.Model(&model.Movie{ID: idCopy}).Association("Genres").Find(&m.Genres)
+				merged = append(merged, m)
+				seen[m.ID] = true
+			}
+		}
+
+		if len(merged) > 0 {
+			mu.Lock()
+			sb.WriteString("\n--- DANH SÁCH PHIM PHÙ HỢP ---\n")
+			for _, m := range merged {
+				genres := ""
+				for _, g := range m.Genres {
+					genres += g.Name + " "
+				}
+				sb.WriteString(fmt.Sprintf("- %s (ID: %d). Thể loại: %s. Mô tả: %s\n", 
+					m.Title, m.ID, strings.TrimSpace(genres), m.Description))
+			}
+			mu.Unlock()
+		}
+	}()
+
+	// 2. Tìm Bắp nước liên quan
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		var concessions []model.Concession
+		repository.DB.Raw(`
+			SELECT * FROM concessions 
+			WHERE is_active = true AND embedding IS NOT NULL 
+			ORDER BY embedding <=> ? 
+			LIMIT 3
+		`, vec).Scan(&concessions)
+		
+		if len(concessions) > 0 {
+			mu.Lock()
+			sb.WriteString("\n--- BẮP NƯỚC & ĐỒ ĂN ---\n")
+			for _, c := range concessions {
+				sb.WriteString(fmt.Sprintf("- %s: %d VNĐ. %s\n", c.Name, c.Price, c.Description))
+			}
+			mu.Unlock()
+		}
+	}()
+
+	// 3. Tìm Khuyến mãi liên quan
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		var promos []model.Promotion
+		now := time.Now()
+		repository.DB.Raw(`
+			SELECT * FROM promotions 
+			WHERE is_active = true AND embedding IS NOT NULL 
+			AND (valid_from <= $1 AND valid_until >= $2)
+			ORDER BY embedding <=> $3 
+			LIMIT 2
+		`, now, now, vec).Scan(&promos)
+		
+		if len(promos) > 0 {
+			mu.Lock()
+			sb.WriteString("\n--- KHUYẾN MÃI & VOUCHER ---\n")
+			for _, p := range promos {
+				sb.WriteString(fmt.Sprintf("- Mã %s: Giảm %d VNĐ. %s\n", p.Code, p.DiscountAmount, p.Description))
+			}
+			mu.Unlock()
+		}
+	}()
+
+	// 4. Tìm FAQ liên quan (Tri thức cũ)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		var faqs []model.FAQLog
+		repository.DB.Raw(`
+			SELECT * FROM faq_logs 
+			WHERE answer IS NOT NULL AND answer != '' AND embedding IS NOT NULL
+			ORDER BY embedding <=> ? 
+			LIMIT 2
+		`, vec).Scan(&faqs)
+		
+		if len(faqs) > 0 {
+			mu.Lock()
+			sb.WriteString("\n--- CÂU HỎI TƯƠNG TỰ ---\n")
+			for _, f := range faqs {
+				sb.WriteString(fmt.Sprintf("Q: %s\nA: %s\n", f.Question, f.Answer))
+			}
+			mu.Unlock()
+		}
+	}()
+
+	wg.Wait()
+	result := sb.String()
+
+	// 3. Lưu vào Redis Cache (TTL 1 giờ - đảm bảo dữ liệu mới nhất nếu DB thay đổi)
+	if redis.Client != nil && result != "" {
+		redis.Client.Set(redis.Ctx, redisKey, result, 1*time.Hour)
+		log.Printf("[ChatBot Context Cache SET] query: %.30s...\n", query)
+	}
+
+	return result, nil
 }
 
 // SeatLayoutReq dùng để gửi dữ liệu tối giản cho AI

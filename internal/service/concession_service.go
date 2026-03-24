@@ -8,6 +8,7 @@ import (
 
 	"github.com/booking-show/booking-show-api/internal/model"
 	"github.com/booking-show/booking-show-api/internal/repository"
+	"github.com/pgvector/pgvector-go"
 	redispkg "github.com/booking-show/booking-show-api/pkg/redis"
 )
 
@@ -129,6 +130,13 @@ func (s *ConcessionService) CreateConcession(req ConcessionReq) (*model.Concessi
 		return nil, err
 	}
 
+	// Tạo Embedding bất đồng bộ (hoặc đồng bộ tùy performance)
+	aiSvc := NewAIService("", "")
+	if vec, err := aiSvc.GenerateEmbedding("Bắp nước/Concession: " + concession.Name + ". " + concession.Description); err == nil && len(vec) == 1024 {
+		v := pgvector.NewVector(vec)
+		repository.DB.Model(&concession).Update("embedding", &v)
+	}
+
 	if redispkg.Client != nil {
 		redispkg.Client.Del(redispkg.Ctx, "concessions:all")
 	}
@@ -160,6 +168,15 @@ func (s *ConcessionService) UpdateConcession(id int, req ConcessionReq) (*model.
 
 	if err := repository.DB.Save(&concession).Error; err != nil {
 		return nil, err
+	}
+
+	// Cập nhật Embedding nếu Name hoặc Description thay đổi
+	if req.Name != "" || req.Description != "" {
+		aiSvc := NewAIService("", "")
+		if vec, err := aiSvc.GenerateEmbedding("Bắp nước/Concession: " + concession.Name + ". " + concession.Description); err == nil && len(vec) == 1024 {
+			v := pgvector.NewVector(vec)
+			repository.DB.Model(&concession).Update("embedding", &v)
+		}
 	}
 
 	if redispkg.Client != nil {

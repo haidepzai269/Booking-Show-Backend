@@ -53,8 +53,27 @@ func MigrateDB() {
 	DB.Exec(`CREATE INDEX IF NOT EXISTS idx_users_email_trgm ON users USING gin (email gin_trgm_ops);`)
 	DB.Exec(`CREATE INDEX IF NOT EXISTS idx_movies_title_trgm ON movies USING gin (title gin_trgm_ops);`)
 
+	// Cập nhật kích thước vector sang 1024 (Voyage AI) - Cần thực hiện thủ công vì AutoMigrate không đổi size cột vector
+	// Lưu ý: Xóa dữ liệu cũ vì không tương thích số chiều
+	DB.Exec(`UPDATE movies SET embedding = NULL;`)
+	DB.Exec(`ALTER TABLE movies ALTER COLUMN embedding TYPE vector(1024);`)
+	DB.Exec(`ALTER TABLE concessions ADD COLUMN IF NOT EXISTS embedding vector(1024);`)
+	DB.Exec(`ALTER TABLE promotions ADD COLUMN IF NOT EXISTS embedding vector(1024);`)
+	DB.Exec(`ALTER TABLE faq_logs ADD COLUMN IF NOT EXISTS embedding vector(1024);`)
+
 	// Tạo HNSW Index cho Vector Search (pgvector) để tìm kiếm cực nhanh trên tập dữ liệu lớn
+	// Lưu ý: Cần xóa index cũ nếu thay đổi số chiều vector
+	DB.Exec(`DROP INDEX IF EXISTS idx_movies_embedding_hnsw;`)
 	DB.Exec(`CREATE INDEX IF NOT EXISTS idx_movies_embedding_hnsw ON movies USING hnsw (embedding vector_cosine_ops);`)
+	
+	DB.Exec(`DROP INDEX IF EXISTS idx_concessions_embedding_hnsw;`)
+	DB.Exec(`CREATE INDEX IF NOT EXISTS idx_concessions_embedding_hnsw ON concessions USING hnsw (embedding vector_cosine_ops);`)
+	
+	DB.Exec(`DROP INDEX IF EXISTS idx_promotions_embedding_hnsw;`)
+	DB.Exec(`CREATE INDEX IF NOT EXISTS idx_promotions_embedding_hnsw ON promotions USING hnsw (embedding vector_cosine_ops);`)
+	
+	DB.Exec(`DROP INDEX IF EXISTS idx_faq_logs_embedding_hnsw;`)
+	DB.Exec(`CREATE INDEX IF NOT EXISTS idx_faq_logs_embedding_hnsw ON faq_logs USING hnsw (embedding vector_cosine_ops);`)
 
 	log.Println("Database migration completed!")
 }

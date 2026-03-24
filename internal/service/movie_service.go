@@ -12,7 +12,6 @@ import (
 	"github.com/booking-show/booking-show-api/internal/repository"
 	redispkg "github.com/booking-show/booking-show-api/pkg/redis"
 	"github.com/pgvector/pgvector-go"
-	"gorm.io/gorm"
 )
 
 const (
@@ -244,7 +243,7 @@ func (s *MovieService) CreateMovie(req CreateMovieReq) (*model.Movie, error) {
 	}
 
 	aiSvc := NewAIService("", "")
-	if vec, err := aiSvc.GenerateEmbedding(req.Title + ". " + req.Description); err == nil && len(vec) == 384 {
+	if vec, err := aiSvc.GenerateEmbedding(req.Title + ". " + req.Description); err == nil && len(vec) == 1024 {
 		v := pgvector.NewVector(vec)
 		movie.Embedding = &v
 	} else {
@@ -341,7 +340,7 @@ func (s *MovieService) UpdateMovie(id int, req UpdateMovieReq) (*model.Movie, er
 	// Update embedding if title or description changed
 	if req.Title != "" || req.Description != "" {
 		aiSvc := NewAIService("", "")
-		if vec, err := aiSvc.GenerateEmbedding(movie.Title + ". " + movie.Description); err == nil && len(vec) == 384 {
+		if vec, err := aiSvc.GenerateEmbedding(movie.Title + ". " + movie.Description); err == nil && len(vec) == 1024 {
 			v := pgvector.NewVector(vec)
 			movie.Embedding = &v
 		}
@@ -535,7 +534,7 @@ func (s *MovieService) SearchMovies(req SearchMoviesReq) ([]model.Movie, error) 
 
 	db := repository.DB.Preload("Genres").Where("is_active = ?", true)
 
-	// Loc theo the loai
+	// Lọc theo thể loại (nếu có)
 	if req.GenreID > 0 {
 		db = db.Joins("JOIN movie_genres ON movie_genres.movie_id = movies.id").
 			Where("movie_genres.genre_id = ?", req.GenreID)
@@ -544,73 +543,67 @@ func (s *MovieService) SearchMovies(req SearchMoviesReq) ([]model.Movie, error) 
 	var movies []model.Movie
 
 	if req.Query != "" {
-		// 1. Phân tích ngữ nghĩa bằng LLM (Groq)
-		if len(req.Query) >= 3 {
-			meta, err := s.GetMoviesMeta()
-			if err != nil {
-				log.Printf("[AI Search] GetMoviesMeta failed: %v\n", err)
-			}
+		// 1. TÌM KIẾM TỪ KHÓA (Keyword Search) - Bao quát cả Tên, Mô tả và Thể loại
+		var keywordMovies []model.Movie
+		repository.DB.Model(&model.Movie{}).
+			Preload("Genres").
+			Joins("LEFT JOIN movie_genres ON movie_genres.movie_id = movies.id").
+			Joins("LEFT JOIN genres ON genres.id = movie_genres.genre_id").
+			Where("movies.is_active = ? AND (movies.title ILIKE ? OR movies.description ILIKE ? OR genres.name ILIKE ? OR ? ILIKE '%' || genres.name || '%')", 
+				true, "%"+req.Query+"%", "%"+req.Query+"%", "%"+req.Query+"%", req.Query).
+			Group("movies.id").
+			Limit(10).
+			Find(&keywordMovies)
+
+		// 2. TÌM KIẾM NGỮ NGHĨA (Vector Search - Voyage AI 1024-dim)
+		aiSvc := NewAIService("", "")
+		embedding, err := aiSvc.GenerateEmbedding(req.Query)
+		
+		var vectorMovies []model.Movie
+		if err == nil && len(embedding) == 1024 {
+			vec := pgvector.NewVector(embedding)
+			// Sử dụng Raw SQL để pgvector hoạt động 100% chính xác
+			err := repository.DB.Raw(`
+				SELECT * FROM movies 
+				WHERE is_active = true AND embedding IS NOT NULL 
+				ORDER BY embedding <=> ? 
+				LIMIT ?
+			`, vec, req.Limit).Scan(&vectorMovies).Error
 			
-			if meta != "" {
-				log.Printf("[AI Search] Calling AnalyzeSearchQuery with meta len: %d\n", len(meta))
-				aiSvc := NewAIService("", "")
-				matchedIDs, err := aiSvc.AnalyzeSearchQuery(req.Query, meta)
-				if err != nil {
-					log.Printf("[AI Search Error]: %v\n", err)
+			if err != nil {
+				log.Printf("[AI Vector Search Error] Query: '%s' - Error: %v\n", req.Query, err)
+			} else {
+				// Preload Genres cho kết quả vector
+				for i := range vectorMovies {
+					repository.DB.Model(&vectorMovies[i]).Association("Genres").Find(&vectorMovies[i].Genres)
 				}
-				if err == nil && len(matchedIDs) > 0 {
-					log.Printf("[AI LLM Search] Query: '%s' -> Matched IDs: %v\n", req.Query, matchedIDs)
-					if err := repository.DB.Preload("Genres").Where("id IN ?", matchedIDs).Find(&movies).Error; err == nil && len(movies) > 0 {
-						// Sắp xếp kết quả theo thứ tự AI trả về
-						idMap := make(map[int]model.Movie)
-						for _, m := range movies {
-							idMap[m.ID] = m
-						}
-						var sortedMovies []model.Movie
-						for _, id := range matchedIDs {
-							if m, ok := idMap[id]; ok {
-								sortedMovies = append(sortedMovies, m)
-							}
-						}
-						
-						if redispkg.Client != nil {
-							if data, err := json.Marshal(sortedMovies); err == nil {
-								redispkg.Client.Set(redispkg.Ctx, cacheKey, data, 5*time.Minute)
-							}
-						}
-						return sortedMovies, nil
-					}
-				} else if err != nil {
-					log.Printf("[AI LLM Error]: %v\n", err)
-				}
+				log.Printf("[AI Vector Search] Query: '%s' -> Found %d movies\n", req.Query, len(vectorMovies))
 			}
-
-			// 2. Fallback: AI Vector Search (pgvector)
-			aiSvc := NewAIService("", "")
-			embedding, err := aiSvc.GenerateEmbedding(req.Query)
-
-			if err == nil && len(embedding) > 0 {
-				vec := pgvector.NewVector(embedding)
-				aiDB := repository.DB.Preload("Genres").Where("is_active = ?", true).
-					Order(gorm.Expr("NULLIF(embedding::text, '')::vector <=> ?", vec))
-
-				if err := aiDB.Limit(req.Limit).Find(&movies).Error; err == nil && len(movies) > 0 {
-					log.Printf("[AI Vector Search] Query: '%s' -> Found %d\n", req.Query, len(movies))
-					if redispkg.Client != nil {
-						if data, err := json.Marshal(movies); err == nil {
-							redispkg.Client.Set(redispkg.Ctx, cacheKey, data, 5*time.Minute)
-						}
-					}
-					return movies, nil
-				}
-			}
+		} else {
+			log.Printf("[AI Search Warning] Voyage Embedding failed: %v", err)
 		}
 
-		// 2. Fallback: pg_trgm Fuzzy Search
-		log.Printf("[Fuzzy DB Search] Query: '%s'\n", req.Query)
-		db = db.Where("title ILIKE ? OR similarity(title, ?) > 0.15", "%"+req.Query+"%", req.Query).
-			Order(gorm.Expr("similarity(title, ?) DESC", req.Query))
+		// 3. HYBRID MERGE: Kết hợp kết quả từ cả  source, loại bỏ trùng lặp
+		seen := make(map[int]bool)
+		var combined []model.Movie
+
+		// Thêm kết quả từ Keyword Search trước (độ chính xác cao về tên)
+		for _, m := range keywordMovies {
+			if !seen[m.ID] {
+				combined = append(combined, m)
+				seen[m.ID] = true
+			}
+		}
+		// Thêm kết quả từ Vector Search (ngữ nghĩa)
+		for _, m := range vectorMovies {
+			if !seen[m.ID] {
+				combined = append(combined, m)
+				seen[m.ID] = true
+			}
+		}
+		movies = combined
 	} else {
+		// Nếu không có query, chỉ lọc theo thể loại và sắp xếp
 		switch req.Sort {
 		case "title":
 			db = db.Order("title ASC")
@@ -621,14 +614,14 @@ func (s *MovieService) SearchMovies(req SearchMoviesReq) ([]model.Movie, error) 
 		default:
 			db = db.Order("release_date DESC")
 		}
+
+		if err := db.Limit(req.Limit).Find(&movies).Error; err != nil {
+			return nil, err
+		}
 	}
 
-	if err := db.Limit(req.Limit).Find(&movies).Error; err != nil {
-		return nil, err
-	}
-
-	// Luu ket qua vao Redis (5 phut)
-	if redispkg.Client != nil {
+	// Lưu kết quả vào Redis (5 phút)
+	if redispkg.Client != nil && len(movies) > 0 {
 		if data, err := json.Marshal(movies); err == nil {
 			redispkg.Client.Set(redispkg.Ctx, cacheKey, data, 5*time.Minute)
 		}
