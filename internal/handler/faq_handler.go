@@ -136,26 +136,60 @@ func (h *FAQHandler) AskFAQ(c *gin.Context) {
 		_ = chatSvc.SaveMessage(userIDPtr, req.SessionID, "ai", answer)
 	}
 
-	// LƯU CÂU HỎI VÀ CÂU TRẢ LỜI VÀO DATABASE FAQ (THỐNG KÊ)
+	// LƯU CÂU HỎI VÀ CÂU TRẢ LỜI VÀO DATABASE FAQ (THỐNG KÊ THÔNG MINH)
 	go func(q, a string) {
+		// Chỉ lưu các câu hỏi đủ dài để đảm bảo chất lượng FAQ
+		if len(strings.TrimSpace(q)) < 10 {
+			return
+		}
+
+		aiSvc := service.NewAIService("", "")
+		vec, err := aiSvc.GenerateEmbedding("Câu hỏi thường gặp/FAQ: " + q)
+		if err != nil || len(vec) != 1024 {
+			return
+		}
+		v := pgvector.NewVector(vec)
+
 		var faq model.FAQLog
-		if err := repository.DB.Where("question ILIKE ?", q).First(&faq).Error; err == nil {
+		// 1. Tìm câu hỏi tương đồng nhất bằng Vector (ngưỡng 0.1 tương đương ~90% khớp ý nghĩa)
+		err = repository.DB.Raw(`
+			SELECT * FROM faq_logs 
+			WHERE embedding IS NOT NULL 
+			ORDER BY embedding <=> ? 
+			LIMIT 1
+		`, v).Scan(&faq).Error
+
+		// Đo khoảng cách vector (nếu DB hỗ trợ hàm <=> trong SELECT)
+		// Ở đây đơn giản: Nếu tìm thấy 1 câu gần nhất và khoảng cách đủ nhỏ (ta ưu tiên exact match trước cho nhanh)
+		
+		isSimilar := false
+		if err == nil && faq.ID != 0 {
+			// Kiểm tra khoảng cách thực tế (Cosine Distance)
+			var distance float64
+			repository.DB.Raw("SELECT ? <=> ? as dist", v, faq.Embedding).Scan(&distance)
+			if distance < 0.1 {
+				isSimilar = true
+			}
+		}
+
+		if isSimilar {
+			// Tăng điểm cho câu hỏi cũ nếu cùng ý nghĩa
 			faq.AskCount++
-			faq.Answer = a // Cập nhật câu trả lời mới nhất
+			faq.Answer = a // Cập nhật câu trả lời mới nhất của AI
+			faq.UpdatedAt = time.Now()
 			repository.DB.Save(&faq)
 		} else {
-			faq = model.FAQLog{Question: q, Answer: a, AskCount: 1}
-			repository.DB.Create(&faq)
+			// Tạo mới nếu nội dung khác biệt hoàn toàn
+			newFaq := model.FAQLog{
+				Question:  q,
+				Answer:    a,
+				AskCount:  1,
+				Embedding: &v,
+			}
+			repository.DB.Create(&newFaq)
 		}
 
-		// Tạo/Cập nhật Embedding cho FAQ bất đồng bộ
-		aiSvc := service.NewAIService("", "")
-		if vec, err := aiSvc.GenerateEmbedding("Câu hỏi thường gặp/FAQ: " + q); err == nil && len(vec) == 1024 {
-			v := pgvector.NewVector(vec)
-			repository.DB.Model(&faq).Update("embedding", &v)
-		}
-
-		// Xóa cache cũ để hệ thống cập nhật lại câu hỏi Top ngay khi người dùng F5 web
+		// Xóa cache cũ để hệ thống cập nhật lại câu hỏi Top
 		if redispkg.Client != nil {
 			redispkg.Client.Del(redispkg.Ctx, "faq:top3")
 		}
